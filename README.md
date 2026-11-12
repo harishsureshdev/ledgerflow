@@ -125,6 +125,61 @@ The reconciliation investigator has **zero mutating tools**:
 
 ---
 
+## 🎮 Clickable Demo Walkthrough (Under 2 Minutes)
+
+A stranger or interviewer can verify all core invariants in under two minutes using the React dashboard:
+
+1. **Test Concurrency Burst & Idempotency ("Fire 50 Concurrent Retries"):**
+   - Navigate to the **Payments & Concurrency Demo** tab.
+   - Click the red **"Fire 50 Concurrent Retries"** button.
+   - The browser dispatches 50 simultaneous parallel HTTP `POST /api/v1/payments` requests using `Promise.all` with the exact same `Idempotency-Key`.
+   - Observe the real-time results box:
+     - **Created (201):** `1`
+     - **Replayed (200):** `49`
+     - **Double Charges:** `0 (VERIFIED)`
+     - **Database Records:** Exactly 1 payment row created in PostgreSQL.
+
+2. **Test Chaos Resilience & Circuit Breaker:**
+   - Navigate to the **Chaos & Resilience Controls** tab.
+   - Adjust the **Simulated Latency** slider to `2500 ms` (exceeds the 2000 ms timeout) or slide **Failure Rate** to `50%`.
+   - Click **Apply Chaos Settings**.
+   - Return to the Payments tab and submit a payment: observe Resilience4j performing automatic retries with capped exponential backoff and the circuit breaker preventing cascading downtime.
+
+3. **Verify Zero-Sum Ledger Invariant ("Books balanced ✓"):**
+   - Navigate to the **Double-Entry Ledger** tab.
+   - Observe the large glowing green badge: **"Books balanced ✓ (Zero-Sum Invariant Satisfied)"**.
+   - Confirm that across all accounts (`MERCHANT`, `SETTLEMENT`, `CUSTOMER`):
+     $$\sum \text{debits} + \sum \text{credits} = \$0.00$$
+   - The `journal_entries` table is protected by a PostgreSQL trigger; any `UPDATE` or `DELETE` attempt fails automatically.
+
+4. **Test Service-Layer RBAC & AI Reconciliation Queue:**
+   - Navigate to the **Reconciliation Queue** tab.
+   - Click **"Trigger Nightly Reconciliation Batch (Inject 4 Mismatches)"**.
+   - Observe 4 discrepancy rows populate (`AMOUNT_MISMATCH`, `DUPLICATE_SETTLEMENT`, `MISSING_IN_BANK`, `MISSING_IN_LEDGER`).
+   - Switch the top persona dropdown to **Customer (Alice)** or **Ops Agent (Smith)** and click **Approve Adjustment**: the request is rejected with `HTTP 403 Forbidden` because Core Principle 4 enforces that only `ROLE_FINANCE_ADMIN` can move money.
+   - Switch persona to **Finance Admin (Chief)** and click **Approve Adjustment**: the adjustment succeeds, posts a balanced compensating journal entry, and marks the item `RESOLVED`.
+
+---
+
+## 🏛 Domain Rules & State Machine
+
+- **Money Representation:** Strictly `long` amount in minor units (cents) and ISO-4217 3-letter currency code (`USD`, `EUR`, etc.). `double` or `float` are never used for money calculations.
+- **Timestamp Precision:** Stored as `Instant` in UTC.
+- **Payment State Machine (Strict Enactment at Domain Layer):**
+  - `INITIATED → AUTHORIZED → CAPTURED → SETTLED`
+  - `INITIATED | AUTHORIZED → FAILED`
+  - `CAPTURED | SETTLED → REVERSED`
+  - Any illegal transition (e.g. `FAILED → CAPTURED` or `REVERSED → AUTHORIZED`) is hard-rejected by `PaymentStateMachine.java` with unit test coverage for all 37 allowed/forbidden state pairs.
+- **Idempotency Semantics:**
+  - Same key + same request payload hash $\rightarrow$ returns stored status code and replayed body.
+  - Same key + different request body $\rightarrow$ `HTTP 422 Unprocessable Content`.
+  - Same key while request is actively in-flight $\rightarrow$ `HTTP 409 Conflict`.
+- **PCI-Aware Log Masking:**
+  - Primary Account Numbers (PAN: 13-19 digits) and 3-4 digit CVVs are never accepted or stored.
+  - Custom Logback converter [PciLogMaskingConverter.java](ledgerflow-app/src/main/java/com/ledgerflow/common/logging/PciLogMaskingConverter.java) scrubs logs matching Luhn-valid credit card patterns down to `[REDACTED_PAN]`.
+
+---
+
 ## 🚀 Quickstart: Running Locally
 
 ### Option A: Complete Stack via Docker Compose (Recommended)
