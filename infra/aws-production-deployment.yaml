@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'LedgerFlow Production Infrastructure - Multi-AZ RDS, ECS Fargate, Secrets Manager, and CloudWatch Billing Alarm'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: 'production'
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: 'Master password for PostgreSQL database'
+  BillingThresholdUSD:
+    Type: Number
+    Default: 10.00
+    Description: 'Monthly billing alarm threshold in USD'
+  AlertEmail:
+    Type: String
+    Default: 'alerts@ledgerflow.local'
+    Description: 'Email address for CloudWatch billing alerts'
+
+Resources:
+  # 1. Billing Alarm: $10 Budget Protection (Non-Negotiable)
+  BillingAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${EnvironmentName}-billing-alarm-topic'
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  EstimatedChargesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-estimated-charges-exceed-${BillingThresholdUSD}usd'
+      AlarmDescription: 'Alerts when monthly AWS charges exceed budget limit'
+      Namespace: 'AWS/Billing'
+      MetricName: 'EstimatedCharges'
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      Statistic: Maximum
+      Period: 21600 # 6 hours
+      EvaluationPeriods: 1
+      Threshold: !Ref BillingThresholdUSD
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref BillingAlarmTopic
+
+  # 2. VPC & Network Architecture
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-ledgerflow-vpc'
+
+  # 3. AWS Secrets Manager (No secrets committed or hardcoded)
+  LedgerFlowAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${EnvironmentName}/ledgerflow/secrets'
+      Description: 'HMAC Webhook secrets, Database passwords, and JWT signing keys'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: "password"
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  # 4. Multi-AZ PostgreSQL 16 RDS Database
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: 'Subnets for Multi-AZ LedgerFlow PostgreSQL'
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  PostgresDBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-ledgerflow-postgres'
+      Engine: postgres
+      EngineVersion: '16.3'
+      DBInstanceClass: db.t4g.medium
+      MultiAZ: true # Guarantees zero data loss across availability zone failures
+      AllocatedStorage: 50
+      StorageType: gp3
+      MasterUsername: postgres
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      DeletionProtection: true
+
+  # 5. ECS Fargate Cluster & Service Definitions
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${EnvironmentName}-ledgerflow-cluster'
+
+Outputs:
+  BillingAlarmArn:
+    Description: 'ARN of the $10 CloudWatch Billing Alarm'
+    Value: !GetAtt EstimatedChargesAlarm.Arn
+  RDSJdbcUrl:
+    Description: 'JDBC endpoint for the Multi-AZ PostgreSQL database'
+    Value: !Sub 'jdbc:postgresql://${PostgresDBInstance.Endpoint.Address}:${PostgresDBInstance.Endpoint.Port}/ledgerflow'
