@@ -197,7 +197,7 @@ export interface ChaosConfig {
 
 export async function getChaosConfig(): Promise<ChaosConfig> {
   try {
-    const res = await fetch('/api/v1/chaos/config');
+    const res = await fetch('/api/v1/chaos/config', { headers: await authHeaders() });
     if (!res.ok) return { latencyMs: 0, failureRate: 0, duplicateRate: 0 };
     return await res.json();
   } catch (e) {
@@ -208,8 +208,9 @@ export async function getChaosConfig(): Promise<ChaosConfig> {
 export async function updateChaosConfig(config: ChaosConfig): Promise<ChaosConfig> {
   const res = await fetch('/api/v1/chaos/config', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(), // chaos controls are OPS_AGENT / FINANCE_ADMIN only
     body: JSON.stringify(config)
   });
+  if (!res.ok) throw new Error(`Chaos update rejected (${res.status}): switch to an Ops or Finance persona`);
   return await res.json();
 }

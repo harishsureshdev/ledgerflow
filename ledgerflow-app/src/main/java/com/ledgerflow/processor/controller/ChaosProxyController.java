@@ -1,5 +1,7 @@
 package com.ledgerflow.processor.controller;
 
+import org.springframework.security.access.prepost.PreAuthorize;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,6 +29,7 @@ public class ChaosProxyController {
     }
 
     @GetMapping("/config")
+    @PreAuthorize("hasAnyRole('OPS_AGENT', 'FINANCE_ADMIN')")
     public ResponseEntity<?> getChaosConfig() {
         try {
             ChaosDto config = restClient.get()
@@ -41,6 +44,7 @@ public class ChaosProxyController {
     }
 
     @PostMapping("/config")
+    @PreAuthorize("hasAnyRole('OPS_AGENT', 'FINANCE_ADMIN')")
     public ResponseEntity<?> updateChaosConfig(@RequestBody ChaosDto config) {
         try {
             ChaosDto updated = restClient.post()

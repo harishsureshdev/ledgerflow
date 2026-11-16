@@ -80,6 +80,11 @@ services:
       PROCESSOR_BASE_URL: http://sim-processor:8081
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      # LOCAL DEMO ONLY: lets the dashboard's persona switcher mint tokens for any role.
+      LEDGERFLOW_DEMO_AUTH_ENABLED: "true"
+      # Room for the dashboard's "fire 50 concurrent retries" idempotency demo
+      RATELIMIT_PAYMENTS_CAPACITY: "100"
+      RATELIMIT_PAYMENTS_REFILL: "100"
       OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces   # only receives traces with --profile observability
     depends_on:
       redis:
