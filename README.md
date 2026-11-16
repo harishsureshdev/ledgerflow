@@ -28,6 +28,7 @@ except the last two rows, which were measured on the running Docker Compose stac
 | Settlement file with injected mismatches | each of the 4 mismatch types flagged exactly once; malformed lines skipped | `SettlementReconciliationJobIntegrationTest` |
 | AI investigator writes to the ledger | never (0 entries, 0 balance changes) | `AiInvestigatorIntegrationTest`, `InvestigatorSecurityIntegrationTest` |
 | AI picks a disallowed action, is prompt-injected, returns garbage, leaks a card number, or is down | rejected by guardrails; deterministic rules used instead | `AiInvestigatorIntegrationTest`, `AiProposalGuardrailsTest` |
+| App crashes mid-payment, client retries later | the expired claim is taken over; if the payment was already saved, the same payment is returned | `StaleIdempotencyLeaseIntegrationTest` |
 | Approving a proposal twice / concurrently (20 threads) | adjustment posted exactly once; second approval gets 409 | `ProposalApprovalSafetyIntegrationTest` |
 | Customer tries to charge another customer's account | 403, no money moves | `PaymentOwnershipIntegrationTest` |
 | Payment burst beyond rate limit | 429 with Retry-After; Redis outage does not block payments | `PaymentRateLimit*IntegrationTest` |
@@ -35,7 +36,7 @@ except the last two rows, which were measured on the running Docker Compose stac
 | Live: 50 parallel requests from the dashboard path, same key | 1 payment in DB; 1 × 201, 49 × 409 (in progress) | measured on `docker compose up` |
 | Live: AI investigation with a local model (qwen2.5:7b via Ollama) | valid proposal in ~16 s, labelled `AI_MODEL`, amount computed by code | measured on `docker compose up` |
 
-`mvn test` runs 116 tests (113 in the app, 3 in the processor simulator).
+`mvn test` runs 119 tests (116 in the app, 3 in the processor simulator).
 
 ---
 
@@ -92,7 +93,9 @@ counts the error), because idempotency and balance checks in Postgres still prot
 
 **3. Exactly-once effect, not exactly-once delivery.**
 - `Idempotency-Key` is scoped per merchant and backed by a unique constraint: same key + same body →
-  stored response; same key + different body → 422; same key while in flight → 409.
+  stored response; same key + different body → 422; same key while in flight → 409. An in-flight claim
+  is a 30 s lease: if the holder crashed, a later retry takes it over, and a unique index allows at most
+  one payment per claim.
 - The card processor call happens outside any database transaction. Its idempotency key is
   `merchantId:key`, identical across retries, so Resilience4j retries can't double-charge.
 - If the processor doesn't give a definite answer (timeout, 5xx, circuit open), the API returns **503,
@@ -228,13 +231,11 @@ A CloudFormation sketch with a billing alarm is in [`infra/aws-production-deploy
 ## Known limitations
 
 Honest list of what is not done yet:
-- An idempotency key stays `IN_PROGRESS` forever if the app crashes mid-request (no lease expiry yet).
 - If the processor approves but the database write then fails, the charge has no ledger record until
   reconciliation flags it (`MISSING_IN_LEDGER`); there is no automatic compensation.
 - The outbox relay doesn't use `FOR UPDATE SKIP LOCKED`, so several app instances could publish the
   same event twice. Consumers dedupe, so there's no money impact.
 - A default JWT signing secret is in the code for local use; production must override it.
-- One error path in `PaymentService` builds JSON from an exception message without escaping.
 
 ---
 

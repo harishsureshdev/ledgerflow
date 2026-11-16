@@ -1,18 +1,30 @@
 package com.ledgerflow.payments.idempotency;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.util.UUID;
 
 @Service
 public class IdempotencyService {
 
     private final IdempotencyKeyRepository repository;
+    private final double leaseSeconds;
 
-    public IdempotencyService(IdempotencyKeyRepository repository) {
+    /**
+     * @param leaseTimeout how long an IN_PROGRESS claim is honoured before a retry may take it over.
+     *                     Must comfortably exceed the slowest legitimate request (processor timeouts
+     *                     x retries); default 30s.
+     */
+    public IdempotencyService(
+            IdempotencyKeyRepository repository,
+            @Value("${ledgerflow.idempotency.lease-timeout:30s}") Duration leaseTimeout
+    ) {
         this.repository = repository;
+        this.leaseSeconds = leaseTimeout.toMillis() / 1000.0;
     }
 
     /**
@@ -34,7 +46,7 @@ public class IdempotencyService {
         if (inserted == 1) {
             IdempotencyKeyRecord record = repository.findByMerchantIdAndIdempotencyKey(merchantId, key)
                     .orElseThrow(() -> new IllegalStateException("Failed to retrieve just-inserted idempotency record"));
-            return new IdempotencyDecision.Proceed(record.getId());
+            return new IdempotencyDecision.Proceed(record.getId(), false);
         }
 
         // Row already existed: fetch and evaluate
@@ -52,6 +64,11 @@ public class IdempotencyService {
         }
 
         if (record.getStatus() == IdempotencyStatus.IN_PROGRESS) {
+            // A claim whose lease expired belongs to an attempt that crashed or hung: take it over
+            // (atomically; only one concurrent retry can win). Otherwise it is genuinely in flight.
+            if (repository.takeOverExpiredLease(record.getId(), leaseSeconds) == 1) {
+                return new IdempotencyDecision.Proceed(record.getId(), true);
+            }
             throw new IdempotencyConflictException(
                     "A request with Idempotency-Key '" + record.getIdempotencyKey() + "' is currently in progress."
             );

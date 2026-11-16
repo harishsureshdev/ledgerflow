@@ -28,4 +28,18 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKeyRe
     int insertIfNotExists(@Param("merchantId") String merchantId,
                           @Param("key") String key,
                           @Param("requestHash") String requestHash);
+
+    /**
+     * Takes over an IN_PROGRESS claim whose lease has expired (the holder crashed or hung).
+     * Atomic: of several concurrent retries exactly one gets 1 row; the rest get 0 (-> 409).
+     * Uses the database clock for both writing and comparing locked_at.
+     */
+    @Modifying
+    @Query(value = """
+        UPDATE idempotency_keys
+        SET locked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = :id AND status = 'IN_PROGRESS'
+          AND (locked_at IS NULL OR locked_at < CURRENT_TIMESTAMP - make_interval(secs => :leaseSeconds))
+        """, nativeQuery = true)
+    int takeOverExpiredLease(@Param("id") java.util.UUID id, @Param("leaseSeconds") double leaseSeconds);
 }

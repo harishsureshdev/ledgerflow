@@ -93,6 +93,16 @@ public class PaymentService {
         IdempotencyDecision.Proceed proceed = (IdempotencyDecision.Proceed) decision;
         UUID idempotencyRecordId = proceed.idempotencyRecordId();
 
+        // Took over an expired claim: the crashed attempt may have committed the payment before it
+        // could store the response. If so, finish its bookkeeping and return that payment.
+        if (proceed.tookOverExpiredLease()) {
+            var recovered = completeFromExistingPayment(idempotencyRecordId);
+            if (recovered != null) {
+                countOutcome("recovered");
+                return recovered;
+            }
+        }
+
         // 1. External processor call: OUTSIDE DB transaction (protected by Resilience4j).
         // The processor-side key is scoped by merchant (our own keys are unique per merchant, not
         // globally) and stays identical across retries, so the processor never charges twice.
@@ -129,11 +139,29 @@ public class PaymentService {
             countOutcome("captured");
             return new PaymentResult(201, response, false);
         } catch (Exception e) {
+            // Lost a race with another attempt holding the same claim (unique index on
+            // payments.idempotency_key_id): that attempt's payment is the answer, not an error.
+            var winner = completeFromExistingPayment(idempotencyRecordId);
+            if (winner != null) {
+                countOutcome("recovered");
+                return winner;
+            }
             countOutcome("failed");
-            String errorJson = "{\"error\": \"" + e.getMessage() + "\"}";
+            String errorJson = serializePayload(java.util.Map.of("error", String.valueOf(e.getMessage())));
             idempotencyService.markFailed(idempotencyRecordId, 500, errorJson);
             throw e;
         }
+    }
+
+    /** If a payment already exists for this claim, store it as the claim's response and return it. */
+    private PaymentResult completeFromExistingPayment(UUID idempotencyRecordId) {
+        return paymentRepository.findByIdempotencyKeyId(idempotencyRecordId)
+                .map(existing -> {
+                    PaymentResponse response = PaymentResponse.from(existing);
+                    idempotencyService.markCompleted(idempotencyRecordId, 201, serializePayload(response));
+                    return new PaymentResult(201, response, true);
+                })
+                .orElse(null);
     }
 
     public PaymentResponse executePaymentTransaction(String merchantId, UUID idempotencyRecordId, CreatePaymentRequest request, String processorTxId) {
