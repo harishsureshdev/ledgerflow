@@ -19,6 +19,7 @@ import com.ledgerflow.payments.repository.PaymentRepository;
 import com.ledgerflow.processor.client.ProcessorChargeCommand;
 import com.ledgerflow.processor.client.ProcessorChargeResult;
 import com.ledgerflow.processor.client.ProcessorClient;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -37,6 +38,12 @@ public class PaymentService {
     private final ProcessorClient processorClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final MeterRegistry meters;
+
+    /** ledgerflow.payments{outcome=captured|declined|replayed|failed}: the payment funnel in Grafana. */
+    private void countOutcome(String outcome) {
+        meters.counter("ledgerflow.payments", "outcome", outcome).increment();
+    }
 
     public PaymentService(
             PaymentRepository paymentRepository,
@@ -46,8 +53,10 @@ public class PaymentService {
             OutboxService outboxService,
             ProcessorClient processorClient,
             ObjectMapper objectMapper,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            MeterRegistry meters
     ) {
+        this.meters = meters;
         this.paymentRepository = paymentRepository;
         this.ledgerService = ledgerService;
         this.accountProvisioningService = accountProvisioningService;
@@ -72,6 +81,7 @@ public class PaymentService {
 
         if (decision instanceof IdempotencyDecision.Replay replay) {
             PaymentResponse replayedResponse = deserializeResponse(replay.responseBody());
+            countOutcome("replayed");
             return new PaymentResult(replay.statusCode(), replayedResponse, true);
         }
 
@@ -89,6 +99,7 @@ public class PaymentService {
                     chargeResult.failureReason() != null ? chargeResult.failureReason() : "Payment charge not approved by card network"
             ));
             idempotencyService.markFailed(idempotencyRecordId, 402, errorJson);
+            countOutcome("declined");
             throw new PaymentDeclinedException("Card processor declined: " + chargeResult.failureReason());
         }
 
@@ -99,8 +110,10 @@ public class PaymentService {
             );
             String responseJson = serializePayload(response);
             idempotencyService.markCompleted(idempotencyRecordId, 201, responseJson);
+            countOutcome("captured");
             return new PaymentResult(201, response, false);
         } catch (Exception e) {
+            countOutcome("failed");
             String errorJson = "{\"error\": \"" + e.getMessage() + "\"}";
             idempotencyService.markFailed(idempotencyRecordId, 500, errorJson);
             throw e;

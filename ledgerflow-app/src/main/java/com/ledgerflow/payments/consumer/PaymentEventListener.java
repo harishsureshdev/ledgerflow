@@ -31,7 +31,8 @@ public class PaymentEventListener {
      * Guarantees exactly-once effect over at-least-once Kafka delivery
      * by deduplicating against the processed_events table.
      */
-    @KafkaListener(topics = "payment-events", groupId = "ledgerflow-payment-auditor")
+    // Group id comes from spring.kafka.consumer.group-id (ledgerflow-payment-auditor; unique per test context)
+    @KafkaListener(topics = "payment-events")
     @Transactional
     public void onMessage(ConsumerRecord<String, String> record) {
         UUID eventId = extractEventId(record);
