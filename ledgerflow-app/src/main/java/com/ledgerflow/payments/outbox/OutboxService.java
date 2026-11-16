@@ -1,5 +1,7 @@
 package com.ledgerflow.payments.outbox;
 
+import com.ledgerflow.common.tracing.TraceContextCarrier;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -12,9 +14,12 @@ public class OutboxService {
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
 
-    public OutboxService(OutboxRepository outboxRepository, ObjectMapper objectMapper) {
+    private final TraceContextCarrier traceContext;
+
+    public OutboxService(OutboxRepository outboxRepository, ObjectMapper objectMapper, TraceContextCarrier traceContext) {
         this.outboxRepository = outboxRepository;
         this.objectMapper = objectMapper;
+        this.traceContext = traceContext;
     }
 
     /**
@@ -31,6 +36,7 @@ public class OutboxService {
         }
 
         OutboxEvent event = new OutboxEvent(aggregateType, aggregateId, eventType, jsonPayload);
+        event.setTraceParent(traceContext.currentTraceParent());
         return outboxRepository.save(event);
     }
 }

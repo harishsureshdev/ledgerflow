@@ -5,7 +5,8 @@
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %maskedMsg%n</pattern>
+            <!-- traceId/spanId come from Micrometer Tracing via MDC; grep a log by traceId to see one request end to end -->
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-},%X{spanId:-}] %-5level %logger{36} - %maskedMsg%n</pattern>
         </encoder>
     </appender>
 

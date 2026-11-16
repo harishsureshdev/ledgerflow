@@ -21,6 +21,13 @@ import java.util.UUID;
 @RequestMapping("/api/v1/payments")
 public class PaymentController {
 
+    private static final java.util.regex.Pattern MERCHANT_ID = java.util.regex.Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
+
+    private static boolean isCustomer(Authentication authentication) {
+        return authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_CUSTOMER"));
+    }
+
     private final PaymentService paymentService;
     private final PaymentRepository paymentRepository;
 
@@ -34,8 +41,17 @@ public class PaymentController {
     public ResponseEntity<PaymentResponse> createPayment(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestHeader(value = "X-Merchant-Id", defaultValue = "merch_default") String merchantId,
-            @Valid @RequestBody CreatePaymentRequest request
+            @Valid @RequestBody CreatePaymentRequest request,
+            Authentication authentication
     ) {
+        if (!MERCHANT_ID.matcher(merchantId).matches()) {
+            throw new IllegalArgumentException("X-Merchant-Id must be 1-64 letters, digits, '_' or '-'");
+        }
+        // A customer may only spend from their own account. Staff (OPS_AGENT / FINANCE_ADMIN) may act on behalf.
+        if (isCustomer(authentication) && !request.customerId().equals(authentication.getName())) {
+            throw new AccessDeniedException("Customers can only create payments from their own account");
+        }
+
         PaymentService.PaymentResult result = paymentService.processPayment(merchantId, idempotencyKey, request);
 
         if (result.replayed()) {

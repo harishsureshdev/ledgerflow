@@ -5,16 +5,31 @@ import com.ledgerflow.investigator.domain.InvestigationProposal;
 import com.ledgerflow.investigator.domain.InvestigationProposalEntity;
 import com.ledgerflow.investigator.repository.InvestigatorProposalRepository;
 import com.ledgerflow.investigator.tools.InvestigatorReadOnlyTools;
-import com.ledgerflow.recon.domain.MismatchType;
 import com.ledgerflow.recon.domain.ReconItem;
 import com.ledgerflow.recon.repository.ReconItemRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
+/**
+ * Investigates a reconciliation mismatch and records an advisory proposal.
+ *
+ * <p>Flow: (1) gather evidence with read-only tools in a short read-only transaction;
+ * (2) ask the AI model, outside any transaction; (3) validate its answer with
+ * {@link AiProposalGuardrails}, falling back to {@link RuleBasedInvestigator};
+ * (4) persist the proposal as PENDING_APPROVAL.
+ *
+ * <p>Core Principle 4: this service NEVER writes to the ledger or moves money.
+ * Only {@code AdjustmentService.approveProposal} (ROLE_FINANCE_ADMIN) can do that.
+ */
 @Service
 public class ReconciliationInvestigatorService {
 
@@ -24,128 +39,55 @@ public class ReconciliationInvestigatorService {
     private final ReconItemRepository reconItemRepository;
     private final InvestigatorProposalRepository proposalRepository;
     private final AuditLogService auditLogService;
+    private final RuleBasedInvestigator ruleBasedInvestigator;
+    private final AiInvestigator aiInvestigator;
+    private final TransactionTemplate readOnlyTx;
+    private final TransactionTemplate writeTx;
 
     public ReconciliationInvestigatorService(
             InvestigatorReadOnlyTools tools,
             ReconItemRepository reconItemRepository,
             InvestigatorProposalRepository proposalRepository,
-            AuditLogService auditLogService
+            AuditLogService auditLogService,
+            RuleBasedInvestigator ruleBasedInvestigator,
+            AiInvestigator aiInvestigator,
+            PlatformTransactionManager txManager
     ) {
         this.tools = tools;
         this.reconItemRepository = reconItemRepository;
         this.proposalRepository = proposalRepository;
         this.auditLogService = auditLogService;
+        this.ruleBasedInvestigator = ruleBasedInvestigator;
+        this.aiInvestigator = aiInvestigator;
+        this.readOnlyTx = new TransactionTemplate(txManager);
+        this.readOnlyTx.setReadOnly(true);
+        this.writeTx = new TransactionTemplate(txManager);
     }
 
-    /**
-     * Conducts a read-only investigation into a reconciliation mismatch.
-     * Compiles an evidence dossier and formulates a structured InvestigationProposal.
-     *
-     * Core Principle 4:
-     * This method NEVER writes to the ledger or moves money.
-     * Any adjustment requires explicit approval by ROLE_FINANCE_ADMIN.
-     */
-    @Transactional
     public InvestigationProposal investigateMismatch(UUID reconItemId) {
-        log.info("Starting AI investigation for reconItemId={}", reconItemId);
+        log.info("Starting investigation for reconItemId={}", reconItemId);
 
-        ReconItem item = reconItemRepository.findById(reconItemId)
-                .orElseThrow(() -> new IllegalArgumentException("Recon item not found: " + reconItemId));
+        // 1. Evidence (short read-only transaction)
+        InvestigationEvidence evidence = readOnlyTx.execute(status -> gatherEvidence(reconItemId));
 
-        // 1. Gather Evidence using strictly Read-Only Tools
-        List<String> evidenceIds = new ArrayList<>();
-        evidenceIds.add("recon_item:" + item.getId());
-        evidenceIds.add("settlement_file:" + item.getSettlementFile().getId());
+        // 2 + 3. AI proposal (no transaction open), validated; rules as the fallback
+        ProposalDraft draft = draftProposal(evidence);
 
-        String ref = item.getPaymentReference();
-        Optional<InvestigatorReadOnlyTools.PaymentTrail> paymentTrail = Optional.empty();
-        if (ref != null && !ref.isBlank()) {
-            paymentTrail = tools.getPaymentTrail(ref);
-            paymentTrail.ifPresent(p -> evidenceIds.add("payment:" + p.id()));
-
-            List<InvestigatorReadOnlyTools.LedgerEntryView> ledgerEntries = tools.getLedgerEntries(ref);
-            ledgerEntries.forEach(e -> evidenceIds.add("journal_entry:" + e.entryId()));
-
-            List<InvestigatorReadOnlyTools.ProcessorEventView> processorEvents = tools.getProcessorEvents(ref);
-            processorEvents.forEach(e -> evidenceIds.add("processor_event:" + e.id()));
-        }
-
-        // 2. Formulate Root Cause & Proposed Compensating Action
-        String rootCause;
-        String proposedAction;
-        Long recommendedAmount = null;
-        String rationale;
-        double confidenceScore;
-
-        MismatchType mismatch = item.getMismatchType();
-
-        switch (mismatch) {
-            case DUPLICATE_SETTLEMENT -> {
-                rootCause = "PROCESSOR_DUPLICATE_FEED";
-                proposedAction = "REJECT_DUPLICATE_BANK_ENTRY";
-                recommendedAmount = 0L;
-                confidenceScore = 0.99;
-                rationale = String.format(
-                        "Bank settlement feed contains multiple lines for reference %s. Internal payment status is %s with balanced ledger transactions. Recommend rejecting duplicate feed record without debiting merchant.",
-                        ref, paymentTrail.map(InvestigatorReadOnlyTools.PaymentTrail::status).orElse("UNKNOWN")
-                );
-            }
-            case AMOUNT_MISMATCH -> {
-                rootCause = "SETTLEMENT_AMOUNT_DIVERGENCE";
-                long bankAmt = item.getBankAmount() != null ? item.getBankAmount() : 0L;
-                long ledgerAmt = item.getLedgerAmount() != null ? item.getLedgerAmount() : 0L;
-                long delta = bankAmt - ledgerAmt;
-
-                proposedAction = delta > 0 ? "COMPENSATING_CREDIT_SETTLEMENT" : "COMPENSATING_DEBIT_SETTLEMENT";
-                recommendedAmount = Math.abs(delta);
-                confidenceScore = 0.96;
-                rationale = String.format(
-                        "Bank feed amount (%d %s) diverges from internal ledger payment (%d %s) by delta of %d minor units. Recommend posting a compensating balanced journal entry to reconcile processor clearing account.",
-                        bankAmt, item.getCurrency(), ledgerAmt, item.getCurrency(), delta
-                );
-            }
-            case MISSING_IN_BANK -> {
-                rootCause = "EXTERNAL_SETTLEMENT_CYCLE_DROP";
-                proposedAction = "TRACE_PROCESSOR_SETTLEMENT_CYCLE";
-                recommendedAmount = item.getLedgerAmount();
-                confidenceScore = 0.92;
-                rationale = String.format(
-                        "Payment %s is recorded and captured internally with ledger entries, but omitted from card processor settlement batch. Recommend verifying processor batch status before taking financial action.",
-                        ref
-                );
-            }
-            case MISSING_IN_LEDGER -> {
-                rootCause = "UNMATCHED_EXTERNAL_CHARGE";
-                proposedAction = "MANUAL_FRAUD_REVIEW";
-                recommendedAmount = item.getBankAmount();
-                confidenceScore = 0.90;
-                rationale = String.format(
-                        "Card network reported settlement line %s for %d %s, but no corresponding internal payment authorization or idempotency key exists. Flagged for compliance review.",
-                        ref, item.getBankAmount(), item.getCurrency()
-                );
-            }
-            default -> {
-                rootCause = "UNKNOWN_DISCREPANCY";
-                proposedAction = "MANUAL_INVESTIGATION";
-                confidenceScore = 0.50;
-                rationale = "Unrecognized mismatch type: " + mismatch;
-            }
-        }
-
-        // 3. Persist Proposal with PENDING_APPROVAL status
-        String joinedEvidence = String.join(",", evidenceIds);
-        InvestigationProposalEntity entity = new InvestigationProposalEntity(
-                item.getId(),
-                rootCause,
-                joinedEvidence,
-                proposedAction,
-                recommendedAmount,
-                item.getCurrency(),
-                rationale,
-                confidenceScore
-        );
-
-        InvestigationProposalEntity saved = proposalRepository.save(entity);
+        // 4. Persist (short write transaction)
+        InvestigationProposalEntity saved = writeTx.execute(status -> {
+            InvestigationProposalEntity entity = new InvestigationProposalEntity(
+                    evidence.reconItemId(),
+                    draft.rootCause(),
+                    String.join(",", evidence.evidenceIds()),
+                    draft.action().name(),
+                    draft.recommendedAmount(),
+                    evidence.currency(),
+                    draft.rationale(),
+                    draft.confidence()
+            );
+            entity.setProvenance(draft.generatedBy(), draft.guardrailNote());
+            return proposalRepository.save(entity);
+        });
 
         auditLogService.log(
                 "AI_INVESTIGATOR",
@@ -153,10 +95,79 @@ public class ReconciliationInvestigatorService {
                 "GENERATE_PROPOSAL",
                 "INVESTIGATION_PROPOSAL",
                 saved.getId().toString(),
-                "reconItemId=" + item.getId() + ", rootCause=" + rootCause + ", proposedAction=" + proposedAction
+                "reconItemId=" + evidence.reconItemId() + ", rootCause=" + draft.rootCause()
+                        + ", proposedAction=" + draft.action() + ", generatedBy=" + draft.generatedBy()
         );
 
         return InvestigationProposal.from(saved);
+    }
+
+    private ProposalDraft draftProposal(InvestigationEvidence evidence) {
+        ProposalDraft rules = ruleBasedInvestigator.investigate(evidence);
+        if (!aiInvestigator.isAvailable()) {
+            return rules;
+        }
+        try {
+            Optional<AiInvestigator.AiAnswer> answer = aiInvestigator.investigate(evidence);
+            if (answer.isEmpty()) {
+                return rules;
+            }
+            AiProposalGuardrails.Verdict verdict = AiProposalGuardrails.check(answer.get(), evidence);
+            if (verdict.accepted()) {
+                return verdict.draft();
+            }
+            log.warn("AI proposal rejected by guardrails for reconItemId={}: {}",
+                    evidence.reconItemId(), verdict.rejectionReason());
+            return rules.withGuardrailNote("AI answer rejected: " + verdict.rejectionReason());
+        } catch (RuntimeException e) {
+            log.warn("AI investigator unavailable for reconItemId={}, using rules: {}",
+                    evidence.reconItemId(), e.toString());
+            return rules.withGuardrailNote("AI call failed: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private InvestigationEvidence gatherEvidence(UUID reconItemId) {
+        ReconItem item = reconItemRepository.findById(reconItemId)
+                .orElseThrow(() -> new IllegalArgumentException("Recon item not found: " + reconItemId));
+
+        List<String> evidenceIds = new ArrayList<>();
+        evidenceIds.add("recon_item:" + item.getId());
+        evidenceIds.add("settlement_file:" + item.getSettlementFile().getId());
+
+        String ref = item.getPaymentReference();
+        String paymentStatus = null;
+        int ledgerEntries = 0;
+        int processorEvents = 0;
+
+        if (ref != null && !ref.isBlank()) {
+            Optional<InvestigatorReadOnlyTools.PaymentTrail> trail = tools.getPaymentTrail(ref);
+            if (trail.isPresent()) {
+                evidenceIds.add("payment:" + trail.get().id());
+                paymentStatus = trail.get().status();
+            }
+
+            List<InvestigatorReadOnlyTools.LedgerEntryView> entries = tools.getLedgerEntries(ref);
+            entries.forEach(e -> evidenceIds.add("journal_entry:" + e.entryId()));
+            ledgerEntries = entries.size();
+
+            List<InvestigatorReadOnlyTools.ProcessorEventView> events = tools.getProcessorEvents(ref);
+            events.forEach(e -> evidenceIds.add("processor_event:" + e.id()));
+            processorEvents = events.size();
+        }
+
+        return new InvestigationEvidence(
+                item.getId(),
+                item.getSettlementFile().getId(),
+                item.getMismatchType(),
+                ref,
+                item.getBankAmount(),
+                item.getLedgerAmount(),
+                item.getCurrency(),
+                paymentStatus,
+                ledgerEntries,
+                processorEvents,
+                List.copyOf(evidenceIds)
+        );
     }
 
     @Transactional(readOnly = true)

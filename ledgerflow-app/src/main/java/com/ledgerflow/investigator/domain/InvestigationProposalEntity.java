@@ -43,7 +43,28 @@ public class InvestigationProposalEntity {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
+    /** AI_MODEL or RULES. */
+    @Column(name = "generated_by", nullable = false, length = 16)
+    private String generatedBy = "RULES";
+
+    /** Why an AI answer was rejected by the guardrails, if it was. */
+    @Column(name = "guardrail_note", columnDefinition = "TEXT")
+    private String guardrailNote;
+
     protected InvestigationProposalEntity() {
+    }
+
+    public void setProvenance(String generatedBy, String guardrailNote) {
+        this.generatedBy = generatedBy;
+        this.guardrailNote = guardrailNote;
+    }
+
+    public String getGeneratedBy() {
+        return generatedBy;
+    }
+
+    public String getGuardrailNote() {
+        return guardrailNote;
     }
 
     public InvestigationProposalEntity(

@@ -11,7 +11,8 @@ import {
   UserCheck,
   Server,
   Lock,
-  Flame
+  Flame,
+  Sparkles
 } from 'lucide-react';
 import {
   PERSONAS,
@@ -28,7 +29,11 @@ import {
   getReconItems,
   ReconItem,
   simulateReconciliation,
-  approveAdjustment,
+  getProposals,
+  investigateItem,
+  approveProposal,
+  InvestigationProposal,
+  MONEY_MOVING_ACTIONS,
   getChaosConfig,
   updateChaosConfig,
   ChaosConfig
@@ -65,6 +70,8 @@ export function App() {
 
   // Recon State
   const [reconItems, setReconItems] = useState<ReconItem[]>([]);
+  const [proposals, setProposals] = useState<Record<string, InvestigationProposal>>({}); // by reconItemId
+  const [investigatingId, setInvestigatingId] = useState<string | null>(null);
   const [simulatingRecon, setSimulatingRecon] = useState(false);
   const [reconError, setReconError] = useState<string | null>(null);
   const [reconSuccess, setReconSuccess] = useState<string | null>(null);
@@ -86,13 +93,18 @@ export function App() {
 
   const refreshData = async () => {
     try {
-      const [pList, aList, bCheck, rList, cConfig] = await Promise.all([
+      const [pList, aList, bCheck, rList, cConfig, propList] = await Promise.all([
         getPayments(),
         getAccounts(),
         getBalanceCheck(),
         getReconItems(),
-        getChaosConfig()
+        getChaosConfig(),
+        getProposals()
       ]);
+      const byItem: Record<string, InvestigationProposal> = {};
+      // keep the newest proposal per recon item
+      [...propList].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).forEach((p) => { byItem[p.reconItemId] = p; });
+      setProposals(byItem);
       setPayments(pList);
       setAccounts(aList);
       setBalanceCheck(bCheck);
@@ -114,7 +126,7 @@ export function App() {
         customerId,
         amount: amountCents,
         currency: 'USD',
-        paymentMethodToken: token
+        paymentToken: token
       });
       await refreshData();
     } catch (err: any) {
@@ -141,11 +153,11 @@ export function App() {
           customerId,
           amount: amountCents,
           currency: 'USD',
-          paymentMethodToken: token
+          paymentToken: token
         });
-        return { index: idx + 1, status: res.status, durationMs: res.durationMs };
+        return { index: idx + 1, status: res.status, durationMs: res.durationMs, paymentId: res.data?.id as string | undefined };
       } catch (err: any) {
-        return { index: idx + 1, status: 500, durationMs: 0 };
+        return { index: idx + 1, status: 500, durationMs: 0, paymentId: undefined as string | undefined };
       }
     });
 
@@ -157,16 +169,20 @@ export function App() {
     let conflicts409 = 0;
     let errors = 0;
 
+    // A retry that arrives after the first request finished is answered with the STORED
+    // response, which is also a 201 with the same payment id. So count distinct payment ids,
+    // not 201s: one id = one charge, however many 201s came back.
+    const paymentIds = new Set<string>();
     results.forEach((r) => {
-      if (r.status === 201) created201++;
-      else if (r.status === 200) replayed200++;
+      if (r.status === 201) { if (r.paymentId) paymentIds.add(r.paymentId); }
       else if (r.status === 409) conflicts409++;
       else errors++;
     });
+    created201 = paymentIds.size;
+    replayed200 = results.filter((r) => r.status === 201).length - paymentIds.size; // same-id 201 replays
 
-    // Invariant: Created payments across all 50 concurrent retries MUST be <= 1
-    // Double charges = Math.max(0, created201 - 1)
-    const doubleCharges = Math.max(0, created201 - 1);
+    // Invariant: all 50 retries share one key, so at most ONE distinct payment may exist
+    const doubleCharges = Math.max(0, paymentIds.size - 1);
 
     setConcurrencyResult({
       total: reqCount,
@@ -201,16 +217,37 @@ export function App() {
     }
   };
 
-  // Approve Adjustment
-  const handleApproveAdjustment = async (item: ReconItem) => {
+  // AI investigation: read-only, produces a PENDING_APPROVAL proposal
+  const handleInvestigate = async (item: ReconItem) => {
+    setReconError(null);
+    setReconSuccess(null);
+    setInvestigatingId(item.id);
+    try {
+      const p = await investigateItem(item.id);
+      setProposals((prev) => ({ ...prev, [item.id]: p }));
+      setReconSuccess(p.generatedBy === 'AI_MODEL'
+        ? `AI proposal ready for ${item.id.substring(0, 8)}... (nothing has moved yet; it needs Finance approval).`
+        : `Rule-based proposal ready for ${item.id.substring(0, 8)}...${p.guardrailNote ? ' (' + p.guardrailNote + ')' : ''}`);
+    } catch (err: any) {
+      setReconError('Investigation failed: ' + err.message);
+    } finally {
+      setInvestigatingId(null);
+    }
+  };
+
+  // Approve a proposal: FINANCE_ADMIN only, enforced by the server; moves money only for adjustment actions
+  const handleApproveProposal = async (item: ReconItem, p: InvestigationProposal) => {
     setReconError(null);
     setReconSuccess(null);
     try {
-      await approveAdjustment(item.id, 'Finance admin verified discrepancy vs bank settlement');
-      setReconSuccess(`Adjustment approved for item ${item.id.substring(0, 8)}... Compensating journal entry posted!`);
+      const approved = await approveProposal(p.id, 'Finance admin reviewed AI proposal');
+      setProposals((prev) => ({ ...prev, [item.id]: approved }));
+      setReconSuccess(MONEY_MOVING_ACTIONS.includes(p.proposedAction)
+        ? `Approved: balanced compensating entry of $${((p.recommendedAmount ?? 0) / 100).toFixed(2)} posted to the ledger.`
+        : `Approved: decision recorded (${p.proposedAction}); no money moved.`);
       await refreshData();
     } catch (err: any) {
-      setReconError(err.message);
+      setReconError('Approval rejected: ' + err.message);
     }
   };
 
@@ -469,11 +506,11 @@ export function App() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, textAlign: 'center', marginBottom: 12 }}>
                   <div style={{ background: 'var(--bg-secondary)', padding: 8, borderRadius: 6 }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Created (201)</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Payments created</div>
                     <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#34d399' }}>{concurrencyResult.created201}</div>
                   </div>
                   <div style={{ background: 'var(--bg-secondary)', padding: 8, borderRadius: 6 }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Replays (200)</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Replays (stored 201)</div>
                     <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#60a5fa' }}>{concurrencyResult.replayed200}</div>
                   </div>
                   <div style={{ background: 'var(--bg-secondary)', padding: 8, borderRadius: 6 }}>
@@ -539,7 +576,7 @@ export function App() {
                         </td>
                         <td style={{ fontWeight: 600 }}>${(p.amount / 100).toFixed(2)}</td>
                         <td>{p.customerId}</td>
-                        <td><code>{p.paymentMethodToken}</code></td>
+                        <td><code>{p.paymentToken}</code></td>
                         <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           {new Date(p.createdAt).toLocaleTimeString()}
                         </td>
@@ -827,8 +864,9 @@ export function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {reconItems.map((item) => (
-                    <tr key={item.id}>
+                  {reconItems.map((item) => { const p = proposals[item.id]; return (
+                    <React.Fragment key={item.id}>
+                    <tr>
                       <td>
                         <span className={`badge ${
                           item.mismatchType === 'AMOUNT_MISMATCH' ? 'badge-amber' :
@@ -849,12 +887,13 @@ export function App() {
                       <td>
                         {item.status === 'RESOLVED' ? (
                           <span style={{ fontSize: '0.75rem', color: '#34d399', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <CheckCircle2 size={14} /> Adjusted
+                            <CheckCircle2 size={14} /> Resolved
                           </span>
-                        ) : (
+                        ) : p && p.status === 'PENDING_APPROVAL' ? (
                           <button
-                            onClick={() => handleApproveAdjustment(item)}
+                            onClick={() => handleApproveProposal(item, p)}
                             className="btn-secondary"
+                            title="Only FINANCE_ADMIN can approve; the server enforces it"
                             style={{
                               fontSize: '0.75rem',
                               padding: '4px 8px',
@@ -862,18 +901,56 @@ export function App() {
                               color: currentPersona.role === 'ROLE_FINANCE_ADMIN' ? '#fff' : 'var(--text-muted)'
                             }}
                           >
-                            Approve Adjustment
+                            Approve proposal
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleInvestigate(item)}
+                            disabled={investigatingId !== null}
+                            className="btn-secondary"
+                            style={{ fontSize: '0.75rem', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4 }}
+                          >
+                            <Sparkles size={12} />
+                            {investigatingId === item.id ? 'Investigating...' : 'Investigate with AI'}
                           </button>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    {p && (
+                      <tr>
+                        <td colSpan={6} style={{ background: 'var(--bg-primary)' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: '0.8rem', padding: '4px 2px' }}>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span className={`badge ${p.generatedBy === 'AI_MODEL' ? 'badge-purple' : 'badge-blue'}`}>
+                                {p.generatedBy === 'AI_MODEL' ? 'AI model' : 'Rule engine'}
+                              </span>
+                              <span className={`badge ${p.status === 'APPROVED' ? 'badge-emerald' : 'badge-amber'}`}>{p.status}</span>
+                              <strong>{p.proposedAction}</strong>
+                              <span style={{ color: 'var(--text-muted)' }}>root cause: <code>{p.rootCause}</code></span>
+                              <span style={{ color: 'var(--text-muted)' }}>confidence {Math.round(p.confidenceScore * 100)}%</span>
+                            </div>
+                            <div style={{ color: 'var(--text-secondary)' }}>{p.rationale}</div>
+                            <div style={{ color: 'var(--text-muted)' }}>
+                              {MONEY_MOVING_ACTIONS.includes(p.proposedAction)
+                                ? <>On approval posts a balanced entry of <strong>${((p.recommendedAmount ?? 0) / 100).toFixed(2)}</strong> (amount computed by code, not by the AI).</>
+                                : <>On approval records the decision only; no money moves.</>}
+                              {' '}Evidence: {p.evidenceIds.length} records.
+                            </div>
+                            {p.guardrailNote && (
+                              <div style={{ color: '#fbbf24' }}>Guardrail: {p.guardrailNote}. The rule engine's proposal is shown instead.</div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
+                  ); })}
                 </tbody>
               </table>
             )}
 
             <div style={{ marginTop: 20, padding: 12, background: 'var(--bg-primary)', borderRadius: 8, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              <strong>Core Principle 4 Protection:</strong> Non-finance personas (e.g. <code>ROLE_CUSTOMER</code> or <code>ROLE_OPS_AGENT</code>) will receive an HTTP 403 Forbidden if they attempt to approve an adjustment. Only users authenticated with <code>ROLE_FINANCE_ADMIN</code> can execute adjustments.
+              <strong>AI never moves money:</strong> the investigator only has read-only lookups and proposes an action from a fixed list; amounts are computed by code and every answer is checked by guardrails (invalid answers fall back to the rule engine). Approving is <code>ROLE_FINANCE_ADMIN</code> only, enforced on the server: Ops and Customer personas get HTTP 403. Approving twice gets HTTP 409.
             </div>
           </div>
         </div>

@@ -27,8 +27,51 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  batch:
+    job:
+      enabled: false          # never run jobs at startup; the scheduler/endpoint launches them
+    jdbc:
+      initialize-schema: never  # Spring Batch tables come from Flyway (V6)
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 200ms          # a slow Redis must not slow payments; limiter fails open
+      connect-timeout: 500ms
+  ai:
+    model:
+      # ollama (local, default) | bedrock-converse (prod) | none
+      chat: ${AI_CHAT_PROVIDER:ollama}
+    chat:
+      client:
+        # The investigator builds its own ChatClient; the auto-configured builder
+        # would fail startup when no model is configured (AI_CHAT_PROVIDER=none).
+        enabled: false
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_MODEL:qwen2.5:7b}   # needs a model with tool calling
+          temperature: 0.0
+    bedrock:
+      aws:
+        region: ${AWS_REGION:us-east-1}
+      converse:
+        chat:
+          options:
+            # Set to a Bedrock model id / inference profile your AWS account has access to.
+            model: ${BEDROCK_MODEL_ID:}
+            temperature: 0.0
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    template:
+      observation-enabled: true   # producer spans + traceparent header on every record
+    listener:
+      observation-enabled: true   # consumer continues the producer's trace
     consumer:
       group-id: ledgerflow-payment-auditor
       auto-offset-reset: earliest
@@ -41,6 +84,19 @@ spring:
 ledgerflow:
   processor:
     base-url: ${PROCESSOR_BASE_URL:http://localhost:8081}
+  ratelimit:
+    payments:
+      capacity: ${RATELIMIT_PAYMENTS_CAPACITY:20}            # burst size per user
+      refill-per-minute: ${RATELIMIT_PAYMENTS_REFILL:20}     # sustained rate per user
+  recon:
+    # inbox-dir: directory the bank drops settlement CSVs into. The nightly job is off unless it
+    # is set (env LEDGERFLOW_RECON_INBOX_DIR). Left out here on purpose: an empty value would still
+    # count as "set" for @ConditionalOnProperty.
+    cron: ${RECON_CRON:0 30 2 * * *}
+  investigator:
+    ai:
+      # When false, or when the model is unreachable, the deterministic rule-based investigator is used.
+      enabled: ${INVESTIGATOR_AI_ENABLED:true}
 
 resilience4j:
   circuitbreaker:
@@ -58,12 +114,27 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        # Safe to retry: the processor dedupes by our idempotency key. RestClientException covers a
+        # timeout that hits while reading the response body (not a ResourceAccessException).
         retry-exceptions:
           - org.springframework.web.client.HttpServerErrorException
           - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.RestClientException
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException   # 4xx: processor refused; retrying won't help
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}   # sample everything locally; lower in prod
+  otlp:
+    tracing:
+      endpoint: ${OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true   # enables p95/p99 latency in Grafana

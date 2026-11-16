@@ -68,7 +68,7 @@ export interface PaymentRequest {
   customerId: string;
   amount: number; // minor units (cents)
   currency: string;
-  paymentMethodToken: string;
+  paymentToken: string;
 }
 
 export interface PaymentResponse {
@@ -78,7 +78,7 @@ export interface PaymentResponse {
   amount: number;
   currency: string;
   status: string;
-  paymentMethodToken: string;
+  paymentToken: string;
   createdAt: string;
 }
 
@@ -189,6 +189,57 @@ export async function approveAdjustment(reconItemId: string, reason: string): Pr
   return await res.json();
 }
 
+// ---- AI investigator (read-only AI proposes; only FINANCE_ADMIN approval moves money) ----
+
+export interface InvestigationProposal {
+  id: string;
+  reconItemId: string;
+  rootCause: string;
+  evidenceIds: string[];
+  proposedAction: string;
+  recommendedAmount: number | null; // minor units, always computed by code, never by the model
+  currency: string;
+  rationale: string;
+  confidenceScore: number;
+  status: 'PENDING_APPROVAL' | 'APPROVED' | string;
+  createdAt: string;
+  generatedBy: 'AI_MODEL' | 'RULES' | string;
+  guardrailNote: string | null;
+}
+
+async function errorFrom(res: Response): Promise<Error> {
+  const err = await res.json().catch(() => ({}));
+  return new Error(err.detail || err.message || `HTTP ${res.status}`);
+}
+
+export async function getProposals(): Promise<InvestigationProposal[]> {
+  try {
+    const res = await fetch('/api/v1/investigator/proposals', { headers: await authHeaders() });
+    if (!res.ok) return []; // customers are not allowed to see proposals
+    return await res.json();
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function investigateItem(reconItemId: string): Promise<InvestigationProposal> {
+  const res = await fetch(`/api/v1/investigator/investigate/${reconItemId}`, { method: 'POST', headers: await authHeaders() });
+  if (!res.ok) throw await errorFrom(res);
+  return await res.json();
+}
+
+export async function approveProposal(proposalId: string, notes: string): Promise<InvestigationProposal> {
+  const res = await fetch(
+    `/api/v1/investigator/approve-proposal?proposalId=${proposalId}&notes=${encodeURIComponent(notes)}`,
+    { method: 'POST', headers: await authHeaders() }
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return await res.json();
+}
+
+/** Actions that post a ledger entry when approved; the others record a decision only. */
+export const MONEY_MOVING_ACTIONS = ['COMPENSATING_CREDIT_SETTLEMENT', 'COMPENSATING_DEBIT_SETTLEMENT'];
+
 export interface ChaosConfig {
   latencyMs: number;
   failureRate: number;
@@ -197,7 +248,7 @@ export interface ChaosConfig {
 
 export async function getChaosConfig(): Promise<ChaosConfig> {
   try {
-    const res = await fetch('/api/v1/chaos/config');
+    const res = await fetch('/api/v1/chaos/config', { headers: await authHeaders() });
     if (!res.ok) return { latencyMs: 0, failureRate: 0, duplicateRate: 0 };
     return await res.json();
   } catch (e) {
@@ -208,8 +259,9 @@ export async function getChaosConfig(): Promise<ChaosConfig> {
 export async function updateChaosConfig(config: ChaosConfig): Promise<ChaosConfig> {
   const res = await fetch('/api/v1/chaos/config', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(), // chaos controls are OPS_AGENT / FINANCE_ADMIN only
     body: JSON.stringify(config)
   });
+  if (!res.ok) throw new Error(`Chaos update rejected (${res.status}): switch to an Ops or Finance persona`);
   return await res.json();
 }

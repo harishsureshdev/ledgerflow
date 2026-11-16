@@ -1,6 +1,10 @@
 package com.ledgerflow.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.ledgerflow.security.ratelimit.PaymentRateLimitFilter;
+import com.ledgerflow.security.ratelimit.RedisTokenBucketRateLimiter;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -48,8 +52,12 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   RedisTokenBucketRateLimiter rateLimiter,
+                                                   ObjectMapper objectMapper) throws Exception {
         http
+                // After authorization: only authenticated, authorized payment requests spend tokens
+                .addFilterAfter(new PaymentRateLimitFilter(rateLimiter, objectMapper), AuthorizationFilter.class)
                 .cors(Customizer.withDefaults())
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -61,7 +69,8 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/api/v1/auth/**").permitAll()
                         .requestMatchers("/api/v1/webhooks/**").permitAll() // Authenticated via HMAC signature
-                        .requestMatchers("/api/v1/chaos/**").permitAll()
+                        // Fault injection against the card processor: staff only
+                        .requestMatchers("/api/v1/chaos/**").hasAnyRole("OPS_AGENT", "FINANCE_ADMIN")
 
                         // Payments API
                         .requestMatchers("/api/v1/payments/**").hasAnyRole("CUSTOMER", "OPS_AGENT", "FINANCE_ADMIN")

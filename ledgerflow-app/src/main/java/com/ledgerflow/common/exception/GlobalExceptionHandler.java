@@ -6,6 +6,7 @@ import com.ledgerflow.ledger.exception.UnbalancedJournalException;
 import com.ledgerflow.payments.idempotency.IdempotencyConflictException;
 import com.ledgerflow.payments.idempotency.IdempotencyPayloadMismatchException;
 import com.ledgerflow.payments.service.PaymentService;
+import com.ledgerflow.recon.service.ProposalNotApprovableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.validation.FieldError;
@@ -45,6 +46,49 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         problem.setType(URI.create("https://ledgerflow.io/errors/idempotency-conflict"));
         problem.setTitle("Idempotency Conflict");
+        problem.setProperty("timestamp", Instant.now());
+        return problem;
+    }
+
+    @ExceptionHandler(com.ledgerflow.processor.client.ProcessorUnavailableException.class)
+    public org.springframework.http.ResponseEntity<ProblemDetail> handleProcessorUnavailable(
+            com.ledgerflow.processor.client.ProcessorUnavailableException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                ex.getMessage() + ". Retry with the same Idempotency-Key; you will not be charged twice.");
+        problem.setType(URI.create("https://ledgerflow.io/errors/processor-unavailable"));
+        problem.setTitle("Card Processor Unavailable");
+        problem.setProperty("outcomeUnknown", ex.isOutcomeUnknown());
+        problem.setProperty("timestamp", Instant.now());
+        return org.springframework.http.ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "2")
+                .body(problem);
+    }
+
+    @ExceptionHandler(com.ledgerflow.payments.service.PaymentRecordingDeferredException.class)
+    public org.springframework.http.ResponseEntity<ProblemDetail> handleRecordingDeferred(RuntimeException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+        problem.setType(URI.create("https://ledgerflow.io/errors/payment-recording-deferred"));
+        problem.setTitle("Payment Recording Deferred");
+        problem.setProperty("timestamp", Instant.now());
+        return org.springframework.http.ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "1")
+                .body(problem);
+    }
+
+    @ExceptionHandler(ProposalNotApprovableException.class)
+    public ProblemDetail handleProposalNotApprovable(ProposalNotApprovableException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        problem.setType(URI.create("https://ledgerflow.io/errors/proposal-not-approvable"));
+        problem.setTitle("Proposal Not Approvable");
+        problem.setProperty("timestamp", Instant.now());
+        return problem;
+    }
+
+    @ExceptionHandler(com.ledgerflow.recon.batch.SettlementReconciliationRunner.AlreadyReconciledException.class)
+    public ProblemDetail handleAlreadyReconciled(RuntimeException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        problem.setType(URI.create("https://ledgerflow.io/errors/settlement-already-reconciled"));
+        problem.setTitle("Settlement File Already Reconciled");
         problem.setProperty("timestamp", Instant.now());
         return problem;
     }

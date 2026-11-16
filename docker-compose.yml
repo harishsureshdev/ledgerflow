@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"   # override if 5432 is taken on your machine
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -44,6 +44,17 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: ledgerflow-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   sim-processor:
     build:
       context: .
@@ -67,7 +78,20 @@ services:
       SPRING_DATASOURCE_PASSWORD: postgres
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       PROCESSOR_BASE_URL: http://sim-processor:8081
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # AI investigator: Ollama running on the host (falls back to rules if it isn't running)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
+      # LOCAL DEMO ONLY: lets the dashboard's persona switcher mint tokens for any role.
+      LEDGERFLOW_DEMO_AUTH_ENABLED: "true"
+      # Room for the dashboard's "fire 50 concurrent retries" idempotency demo
+      RATELIMIT_PAYMENTS_CAPACITY: "100"
+      RATELIMIT_PAYMENTS_REFILL: "100"
+      OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces   # only receives traces with --profile observability
     depends_on:
+      redis:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       kafka:
@@ -84,6 +108,41 @@ services:
       - "3000:80"
     depends_on:
       - ledgerflow-app
+
+  # ---- Observability (optional): docker compose --profile observability up ----
+  # Grafana http://localhost:3001 (admin/admin) · Jaeger http://localhost:16686 · Prometheus http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: ledgerflow-prometheus
+    profiles: ["observability"]
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    container_name: ledgerflow-jaeger
+    profiles: ["observability"]
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP over HTTP (the app sends traces here)
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: ledgerflow-grafana
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ledgerflow.json
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"     # 3000 is the LedgerFlow web dashboard
+    depends_on:
+      - prometheus
+      - jaeger
 
 volumes:
   postgres_data:
