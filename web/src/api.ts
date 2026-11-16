@@ -68,7 +68,7 @@ export interface PaymentRequest {
   customerId: string;
   amount: number; // minor units (cents)
   currency: string;
-  paymentMethodToken: string;
+  paymentToken: string;
 }
 
 export interface PaymentResponse {
@@ -78,7 +78,7 @@ export interface PaymentResponse {
   amount: number;
   currency: string;
   status: string;
-  paymentMethodToken: string;
+  paymentToken: string;
   createdAt: string;
 }
 
