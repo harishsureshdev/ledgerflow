@@ -1,12 +1,20 @@
 package com.ledgerflow.security;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
+/**
+ * DEMO ONLY: issues a signed JWT for any persona/role so the dashboard can switch users.
+ * It lets the caller pick ANY role (including FINANCE_ADMIN), so it is OFF unless
+ * {@code ledgerflow.demo-auth.enabled=true} (set by docker-compose for the local demo).
+ * In production, tokens come from a real identity provider.
+ */
 @RestController
 @RequestMapping("/api/v1/auth")
+@ConditionalOnProperty(name = "ledgerflow.demo-auth.enabled", havingValue = "true")
 public class DemoAuthController {
 
     private final DemoTokenService demoTokenService;

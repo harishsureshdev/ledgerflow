@@ -69,7 +69,8 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/api/v1/auth/**").permitAll()
                         .requestMatchers("/api/v1/webhooks/**").permitAll() // Authenticated via HMAC signature
-                        .requestMatchers("/api/v1/chaos/**").permitAll()
+                        // Fault injection against the card processor: staff only
+                        .requestMatchers("/api/v1/chaos/**").hasAnyRole("OPS_AGENT", "FINANCE_ADMIN")
 
                         // Payments API
                         .requestMatchers("/api/v1/payments/**").hasAnyRole("CUSTOMER", "OPS_AGENT", "FINANCE_ADMIN")
