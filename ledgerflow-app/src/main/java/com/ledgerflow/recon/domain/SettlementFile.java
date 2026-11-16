@@ -43,6 +43,20 @@ public class SettlementFile {
         this.createdAt = Instant.now();
     }
 
+    /** A file registered by the batch job before its lines are read; totals are filled in afterwards. */
+    public static SettlementFile staging(String filename) {
+        SettlementFile f = new SettlementFile(filename, 0, 0L, "USD");
+        f.status = "STAGING";
+        return f;
+    }
+
+    public void markProcessed(int totalRecords, long totalAmount, String currency) {
+        this.totalRecords = totalRecords;
+        this.totalAmount = totalAmount;
+        if (currency != null) this.currency = currency;
+        this.status = "PROCESSED";
+    }
+
     public UUID getId() {
         return id;
     }

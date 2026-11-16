@@ -49,7 +49,9 @@ class WebhookIntegrationTest extends AbstractIntegrationTest {
                 String.class
         );
 
-        assertThat(firstResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(firstResponse.getStatusCode())
+                .as("response body: %s", firstResponse.getBody()) // seen failing intermittently with 400; keep the reason
+                .isEqualTo(HttpStatus.OK);
         assertThat(firstResponse.getBody()).contains("success");
         assertThat(firstResponse.getBody()).contains("\"duplicate\":false");
 

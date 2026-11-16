@@ -7,7 +7,16 @@ import com.ledgerflow.recon.dto.ReconItemResponse;
 import com.ledgerflow.recon.repository.ReconItemRepository;
 import com.ledgerflow.recon.service.ReconciliationService;
 import com.ledgerflow.recon.service.SettlementLine;
+import com.ledgerflow.recon.batch.SettlementReconciliationRunner;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -22,14 +31,21 @@ public class ReconController {
     private final ReconciliationService reconciliationService;
     private final PaymentRepository paymentRepository;
 
+    private final SettlementReconciliationRunner reconciliationRunner;
+    private final Path workDir;
+
     public ReconController(
             ReconItemRepository reconItemRepository,
             ReconciliationService reconciliationService,
-            PaymentRepository paymentRepository
+            PaymentRepository paymentRepository,
+            SettlementReconciliationRunner reconciliationRunner,
+            @Value("${ledgerflow.recon.work-dir:${java.io.tmpdir}/ledgerflow-recon}") String workDir
     ) {
         this.reconItemRepository = reconItemRepository;
         this.reconciliationService = reconciliationService;
         this.paymentRepository = paymentRepository;
+        this.reconciliationRunner = reconciliationRunner;
+        this.workDir = Path.of(workDir).toAbsolutePath().normalize();
     }
 
     @GetMapping("/items")
@@ -39,6 +55,30 @@ public class ReconController {
                 .map(ReconItemResponse::from)
                 .toList();
         return ResponseEntity.ok(list);
+    }
+
+    /**
+     * Upload a bank settlement CSV and run the Spring Batch reconciliation job on it now
+     * (the same job the nightly scheduler runs). Header: line_id,payment_reference,amount_minor,currency,status.
+     * Optional windowStart/windowEnd (ISO-8601) enable MISSING_IN_BANK detection for payments in that window.
+     */
+    @PostMapping(value = "/settlement-files", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAnyRole('OPS_AGENT', 'FINANCE_ADMIN')")
+    public ResponseEntity<SettlementReconciliationRunner.RunSummary> uploadSettlementFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "windowStart", required = false) Instant windowStart,
+            @RequestParam(value = "windowEnd", required = false) Instant windowEnd
+    ) throws IOException {
+        if (file.isEmpty()) {
+            throw new IllegalArgumentException("Settlement file is empty");
+        }
+        Files.createDirectories(workDir);
+        Path target = workDir.resolve(SettlementReconciliationRunner.safeFilename(file.getOriginalFilename())).normalize();
+        if (!target.startsWith(workDir)) {
+            throw new IllegalArgumentException("Invalid filename");
+        }
+        file.transferTo(target);
+        return ResponseEntity.ok(reconciliationRunner.run(target, windowStart, windowEnd));
     }
 
     /**

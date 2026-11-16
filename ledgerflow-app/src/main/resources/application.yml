@@ -27,6 +27,39 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  batch:
+    job:
+      enabled: false          # never run jobs at startup; the scheduler/endpoint launches them
+    jdbc:
+      initialize-schema: never  # Spring Batch tables come from Flyway (V6)
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+  ai:
+    model:
+      # ollama (local, default) | bedrock-converse (prod) | none
+      chat: ${AI_CHAT_PROVIDER:ollama}
+    chat:
+      client:
+        # The investigator builds its own ChatClient; the auto-configured builder
+        # would fail startup when no model is configured (AI_CHAT_PROVIDER=none).
+        enabled: false
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_MODEL:llama3.1}
+          temperature: 0.0
+    bedrock:
+      aws:
+        region: ${AWS_REGION:us-east-1}
+      converse:
+        chat:
+          options:
+            # Set to a Bedrock model id / inference profile your AWS account has access to.
+            model: ${BEDROCK_MODEL_ID:}
+            temperature: 0.0
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
@@ -41,6 +74,15 @@ spring:
 ledgerflow:
   processor:
     base-url: ${PROCESSOR_BASE_URL:http://localhost:8081}
+  recon:
+    # inbox-dir: directory the bank drops settlement CSVs into. The nightly job is off unless it
+    # is set (env LEDGERFLOW_RECON_INBOX_DIR). Left out here on purpose: an empty value would still
+    # count as "set" for @ConditionalOnProperty.
+    cron: ${RECON_CRON:0 30 2 * * *}
+  investigator:
+    ai:
+      # When false, or when the model is unreachable, the deterministic rule-based investigator is used.
+      enabled: ${INVESTIGATOR_AI_ENABLED:true}
 
 resilience4j:
   circuitbreaker:

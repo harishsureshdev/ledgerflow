@@ -4,6 +4,7 @@ import com.ledgerflow.audit.AuditLogService;
 import com.ledgerflow.common.domain.Money;
 import com.ledgerflow.investigator.domain.InvestigationProposal;
 import com.ledgerflow.investigator.domain.InvestigationProposalEntity;
+import com.ledgerflow.investigator.domain.ProposedAction;
 import com.ledgerflow.investigator.repository.InvestigatorProposalRepository;
 import com.ledgerflow.ledger.domain.Account;
 import com.ledgerflow.ledger.domain.TransactionType;
@@ -90,19 +91,31 @@ public class AdjustmentService {
             throw new AccessDeniedException("Service Layer Invariant: Only ROLE_FINANCE_ADMIN is authorized to approve AI proposals");
         }
 
-        InvestigationProposalEntity proposal = proposalRepository.findById(proposalId)
+        // Lock the proposal row: concurrent approvals serialize here, and only the first sees PENDING_APPROVAL.
+        InvestigationProposalEntity proposal = proposalRepository.findByIdForUpdate(proposalId)
                 .orElseThrow(() -> new IllegalArgumentException("Proposal not found: " + proposalId));
+
+        if (!"PENDING_APPROVAL".equals(proposal.getStatus())) {
+            throw new ProposalNotApprovableException(
+                    "Proposal " + proposalId + " is " + proposal.getStatus() + ", not PENDING_APPROVAL");
+        }
 
         ReconItem item = reconItemRepository.findById(proposal.getReconItemId())
                 .orElseThrow(() -> new IllegalArgumentException("Recon item not found for proposal: " + proposal.getReconItemId()));
 
-        // Execute compensating balanced entry if amount adjustment is required
-        if (proposal.getRecommendedAmount() != null && proposal.getRecommendedAmount() > 0) {
+        // Only adjustment actions move money. Investigate/review/reject actions record the decision only.
+        ProposedAction action = ProposedAction.parse(proposal.getProposedAction());
+        if (action == null) {
+            throw new ProposalNotApprovableException("Unknown proposed action: " + proposal.getProposedAction());
+        }
+
+        if (action.movesMoney() && proposal.getRecommendedAmount() != null && proposal.getRecommendedAmount() > 0) {
             Account clearing = accountProvisioningService.getOrCreateSettlementAccount(proposal.getCurrency());
             Account platform = accountProvisioningService.getOrCreateMerchantAccount("PLATFORM_ADJUSTMENTS", proposal.getCurrency());
 
-            long adjAmount = proposal.getRecommendedAmount();
-            String adjRef = "adj_" + proposal.getId().toString().substring(0, 8);
+            // CREDIT: bank settled more than the ledger expected; DEBIT: bank settled less.
+            long clearingLeg = action.ledgerSign() * proposal.getRecommendedAmount();
+            String adjRef = "adj_" + proposal.getId();
 
             // Balanced journal entry: leg1 + leg2 = 0
             ledgerService.postTransaction(new PostTransactionCommand(
@@ -110,8 +123,8 @@ public class AdjustmentService {
                     TransactionType.ADJUSTMENT,
                     "Compensating adjustment for recon item " + item.getId() + " - " + notes,
                     List.of(
-                            new PostTransactionCommand.PostEntryCommand(clearing.getId(), new Money(adjAmount, proposal.getCurrency())),
-                            new PostTransactionCommand.PostEntryCommand(platform.getId(), new Money(-adjAmount, proposal.getCurrency()))
+                            new PostTransactionCommand.PostEntryCommand(clearing.getId(), new Money(clearingLeg, proposal.getCurrency())),
+                            new PostTransactionCommand.PostEntryCommand(platform.getId(), new Money(-clearingLeg, proposal.getCurrency()))
                     )
             ));
         }

@@ -17,7 +17,9 @@ public record InvestigationProposal(
         String rationale,
         double confidenceScore,
         String status,
-        Instant createdAt
+        Instant createdAt,
+        String generatedBy,
+        String guardrailNote
 ) {
     public static InvestigationProposal from(InvestigationProposalEntity entity) {
         List<String> evidence = entity.getEvidenceIds() != null && !entity.getEvidenceIds().isBlank()
@@ -35,7 +37,9 @@ public record InvestigationProposal(
                 entity.getRationale(),
                 entity.getConfidenceScore(),
                 entity.getStatus(),
-                entity.getCreatedAt()
+                entity.getCreatedAt(),
+                entity.getGeneratedBy(),
+                entity.getGuardrailNote()
         );
     }
 }
