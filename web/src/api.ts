@@ -189,6 +189,57 @@ export async function approveAdjustment(reconItemId: string, reason: string): Pr
   return await res.json();
 }
 
+// ---- AI investigator (read-only AI proposes; only FINANCE_ADMIN approval moves money) ----
+
+export interface InvestigationProposal {
+  id: string;
+  reconItemId: string;
+  rootCause: string;
+  evidenceIds: string[];
+  proposedAction: string;
+  recommendedAmount: number | null; // minor units, always computed by code, never by the model
+  currency: string;
+  rationale: string;
+  confidenceScore: number;
+  status: 'PENDING_APPROVAL' | 'APPROVED' | string;
+  createdAt: string;
+  generatedBy: 'AI_MODEL' | 'RULES' | string;
+  guardrailNote: string | null;
+}
+
+async function errorFrom(res: Response): Promise<Error> {
+  const err = await res.json().catch(() => ({}));
+  return new Error(err.detail || err.message || `HTTP ${res.status}`);
+}
+
+export async function getProposals(): Promise<InvestigationProposal[]> {
+  try {
+    const res = await fetch('/api/v1/investigator/proposals', { headers: await authHeaders() });
+    if (!res.ok) return []; // customers are not allowed to see proposals
+    return await res.json();
+  } catch (e) {
+    return [];
+  }
+}
+
+export async function investigateItem(reconItemId: string): Promise<InvestigationProposal> {
+  const res = await fetch(`/api/v1/investigator/investigate/${reconItemId}`, { method: 'POST', headers: await authHeaders() });
+  if (!res.ok) throw await errorFrom(res);
+  return await res.json();
+}
+
+export async function approveProposal(proposalId: string, notes: string): Promise<InvestigationProposal> {
+  const res = await fetch(
+    `/api/v1/investigator/approve-proposal?proposalId=${proposalId}&notes=${encodeURIComponent(notes)}`,
+    { method: 'POST', headers: await authHeaders() }
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return await res.json();
+}
+
+/** Actions that post a ledger entry when approved; the others record a decision only. */
+export const MONEY_MOVING_ACTIONS = ['COMPENSATING_CREDIT_SETTLEMENT', 'COMPENSATING_DEBIT_SETTLEMENT'];
+
 export interface ChaosConfig {
   latencyMs: number;
   failureRate: number;
