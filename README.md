@@ -147,25 +147,24 @@ Requires Docker. Optional: [Ollama](https://ollama.com) with a tool-calling mode
 investigator (`ollama pull qwen2.5:7b`). Without it, investigations fall back to the rule engine.
 
 ```bash
+git clone https://github.com/harishsureshdev/ledgerflow.git
+cd ledgerflow
 docker compose up --build
 # if port 5432 is already used on your machine:
 POSTGRES_HOST_PORT=55432 docker compose up --build
 ```
 
-| What | Where |
+Once it is running, these are served from your own machine:
+
+| Service | Port |
 | :--- | :--- |
-| Dashboard | http://localhost:3000 |
-| API + actuator | http://localhost:8080 |
-| sim-processor | http://localhost:8081 |
+| Dashboard | `3000` |
+| API + actuator | `8080` |
+| sim-processor (fake card network) | `8081` |
 
-Observability (optional):
-
-```bash
-docker compose --profile observability up --build
-```
-
-Grafana http://localhost:3001 (admin/admin, "LedgerFlow Overview" dashboard), Jaeger
-http://localhost:16686, Prometheus http://localhost:9090. Every log line carries `[traceId,spanId]`.
+Observability stack (optional): `docker compose --profile observability up --build` adds Grafana on
+port `3001` (login `admin`/`admin`, "LedgerFlow Overview" dashboard), Jaeger on `16686` and Prometheus
+on `9090`. Every log line carries `[traceId,spanId]`.
 
 > **Demo mode.** Docker Compose sets `LEDGERFLOW_DEMO_AUTH_ENABLED=true`, which turns on
 > `POST /api/v1/auth/demo-token` so the dashboard's persona switcher can get a token for any role. It is
