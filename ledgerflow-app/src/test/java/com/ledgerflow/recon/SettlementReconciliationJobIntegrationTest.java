@@ -70,12 +70,12 @@ class SettlementReconciliationJobIntegrationTest extends AbstractIntegrationTest
     @Test
     @DisplayName("Job flags exactly the injected mismatches, skips malformed lines, and records file totals")
     void flagsInjectedMismatches() throws Exception {
-        Instant windowStart = Instant.now().minusSeconds(1);
+        Instant windowStart = Instant.now(); // exactly this test's payments; other tests' must fall outside
         UUID matched = pay(1000L);
         UUID wrongAmount = pay(2000L);
         UUID duplicated = pay(3000L);
         UUID omitted = pay(4000L);
-        Instant windowEnd = Instant.now().plusSeconds(1);
+        Instant windowEnd = Instant.now().plusMillis(1);
         String ghost = "ghost_" + UUID.randomUUID();
 
         Path file = csv("settlement", List.of(

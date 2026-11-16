@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"   # override if 5432 is taken on your machine
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -80,6 +80,9 @@ services:
       PROCESSOR_BASE_URL: http://sim-processor:8081
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      # AI investigator: Ollama running on the host (falls back to rules if it isn't running)
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       # LOCAL DEMO ONLY: lets the dashboard's persona switcher mint tokens for any role.
       LEDGERFLOW_DEMO_AUTH_ENABLED: "true"
       # Room for the dashboard's "fire 50 concurrent retries" idempotency demo
