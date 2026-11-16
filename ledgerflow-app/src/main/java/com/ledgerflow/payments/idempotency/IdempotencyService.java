@@ -68,6 +68,21 @@ public class IdempotencyService {
         });
     }
 
+    /**
+     * Gives up an IN_PROGRESS claim without storing a response, so the same key can be retried.
+     * Used only when the outcome is not final (processor unavailable / unknown). Completed or
+     * failed records are never released: their stored response is the answer forever.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void release(UUID recordId) {
+        repository.findById(recordId)
+                .filter(r -> r.getStatus() == IdempotencyStatus.IN_PROGRESS)
+                .ifPresent(r -> {
+                    repository.delete(r);
+                    repository.flush();
+                });
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markFailed(UUID recordId, int statusCode, String responseBody) {
         repository.findById(recordId).ifPresent(record -> {
