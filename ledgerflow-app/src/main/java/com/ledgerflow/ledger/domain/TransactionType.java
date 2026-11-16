@@ -5,5 +5,7 @@ public enum TransactionType {
     PAYMENT_REVERSAL,
     SETTLEMENT,
     FEE,
-    ADJUSTMENT
+    ADJUSTMENT,
+    /** Money entering the platform from outside (opening balance / top-up), from the EXTERNAL-FUNDING account. */
+    FUNDING
 }
