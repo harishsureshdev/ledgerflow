@@ -172,10 +172,14 @@ http://localhost:16686, Prometheus http://localhost:9090. Every log line carries
    rate to 100% and apply. A new payment returns **503 "Card Processor Unavailable"**, not a decline.
    Set it back to 0% and retry. The payment succeeds, once.
 3. **Books balance.** The **Double-Entry Ledger** tab shows the zero-sum check across all accounts.
-4. **Reconciliation + approval.** As *Ops Agent*, click **Trigger Nightly Reconciliation Batch** (4
-   injected mismatches). **Approve Adjustment** is rejected for Ops (`403`); as *Finance Admin* it
-   marks the item resolved.
-5. **AI investigator** (API only for now; the dashboard does not call it yet):
+4. **Reconciliation + AI + approval.** As *Ops Agent*, open **Reconciliation** and click **Trigger
+   Nightly Reconciliation Batch** (4 injected mismatches). Click **Investigate with AI** on the
+   `AMOUNT_MISMATCH` row: a proposal appears, labelled *AI model* or *Rule engine*, with its action,
+   rationale and the amount code computed. **Approve proposal** as Ops is rejected (`403`); switch to
+   *Finance Admin* and approve: the balanced compensating entry is posted and the ledger still balances.
+   On `DUPLICATE_SETTLEMENT` / `MISSING_*` rows, approval records the decision but moves no money.
+
+The same flow over the API:
 
    ```bash
    T=$(curl -s -X POST localhost:8080/api/v1/auth/demo-token -H 'Content-Type: application/json' \
