@@ -36,6 +36,12 @@ spring:
     multipart:
       max-file-size: 20MB
       max-request-size: 20MB
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 200ms          # a slow Redis must not slow payments; limiter fails open
+      connect-timeout: 500ms
   ai:
     model:
       # ollama (local, default) | bedrock-converse (prod) | none
@@ -74,6 +80,10 @@ spring:
 ledgerflow:
   processor:
     base-url: ${PROCESSOR_BASE_URL:http://localhost:8081}
+  ratelimit:
+    payments:
+      capacity: ${RATELIMIT_PAYMENTS_CAPACITY:20}            # burst size per user
+      refill-per-minute: ${RATELIMIT_PAYMENTS_REFILL:20}     # sustained rate per user
   recon:
     # inbox-dir: directory the bank drops settlement CSVs into. The nightly job is off unless it
     # is set (env LEDGERFLOW_RECON_INBOX_DIR). Left out here on purpose: an empty value would still

@@ -20,6 +20,10 @@ spring:
 ledgerflow:
   scheduling:
     enabled: false   # tests drive the outbox relay / recon job explicitly
+  ratelimit:
+    payments:        # effectively unlimited so load/concurrency tests aren't throttled;
+      capacity: 100000          # PaymentRateLimitIntegrationTest sets tight limits
+      refill-per-minute: 100000
   investigator:
     ai:
       enabled: false
