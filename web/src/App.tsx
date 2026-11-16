@@ -114,7 +114,7 @@ export function App() {
         customerId,
         amount: amountCents,
         currency: 'USD',
-        paymentMethodToken: token
+        paymentToken: token
       });
       await refreshData();
     } catch (err: any) {
@@ -141,7 +141,7 @@ export function App() {
           customerId,
           amount: amountCents,
           currency: 'USD',
-          paymentMethodToken: token
+          paymentToken: token
         });
         return { index: idx + 1, status: res.status, durationMs: res.durationMs };
       } catch (err: any) {
@@ -539,7 +539,7 @@ export function App() {
                         </td>
                         <td style={{ fontWeight: 600 }}>${(p.amount / 100).toFixed(2)}</td>
                         <td>{p.customerId}</td>
-                        <td><code>{p.paymentMethodToken}</code></td>
+                        <td><code>{p.paymentToken}</code></td>
                         <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                           {new Date(p.createdAt).toLocaleTimeString()}
                         </td>
