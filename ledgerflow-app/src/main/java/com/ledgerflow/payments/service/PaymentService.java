@@ -19,6 +19,7 @@ import com.ledgerflow.payments.repository.PaymentRepository;
 import com.ledgerflow.processor.client.ProcessorChargeCommand;
 import com.ledgerflow.processor.client.ProcessorChargeResult;
 import com.ledgerflow.processor.client.ProcessorClient;
+import com.ledgerflow.processor.client.ProcessorUnavailableException;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -40,7 +41,11 @@ public class PaymentService {
     private final TransactionTemplate transactionTemplate;
     private final MeterRegistry meters;
 
-    /** ledgerflow.payments{outcome=captured|declined|replayed|failed}: the payment funnel in Grafana. */
+    static String processorKey(String merchantId, String idempotencyKey) {
+        return merchantId + ":" + idempotencyKey;
+    }
+
+    /** ledgerflow.payments{outcome=captured|declined|replayed|failed|processor_*}: the payment funnel in Grafana. */
     private void countOutcome(String outcome) {
         meters.counter("ledgerflow.payments", "outcome", outcome).increment();
     }
@@ -88,10 +93,21 @@ public class PaymentService {
         IdempotencyDecision.Proceed proceed = (IdempotencyDecision.Proceed) decision;
         UUID idempotencyRecordId = proceed.idempotencyRecordId();
 
-        // 1. External processor call: OUTSIDE DB transaction (protected by Resilience4j)
-        ProcessorChargeResult chargeResult = processorClient.authorizeAndCapture(
-                new ProcessorChargeCommand(request.paymentToken(), request.amount(), request.currency(), idempotencyKey)
-        );
+        // 1. External processor call: OUTSIDE DB transaction (protected by Resilience4j).
+        // The processor-side key is scoped by merchant (our own keys are unique per merchant, not
+        // globally) and stays identical across retries, so the processor never charges twice.
+        ProcessorChargeResult chargeResult;
+        try {
+            chargeResult = processorClient.authorizeAndCapture(new ProcessorChargeCommand(
+                    request.paymentToken(), request.amount(), request.currency(), processorKey(merchantId, idempotencyKey)));
+        } catch (ProcessorUnavailableException e) {
+            // No definite answer (maybe charged, maybe not). Not a decline and not final: release the
+            // key so the client's retry with the same Idempotency-Key runs again; the processor will
+            // replay the original charge if it happened. Reconciliation is the backstop.
+            idempotencyService.release(idempotencyRecordId);
+            countOutcome(e.isOutcomeUnknown() ? "processor_outcome_unknown" : "processor_unavailable");
+            throw e;
+        }
 
         if (!chargeResult.isApproved()) {
             String errorJson = serializePayload(new PaymentErrorResponse(

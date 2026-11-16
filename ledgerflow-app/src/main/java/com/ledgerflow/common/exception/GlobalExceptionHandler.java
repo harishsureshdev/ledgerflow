@@ -50,6 +50,20 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(com.ledgerflow.processor.client.ProcessorUnavailableException.class)
+    public org.springframework.http.ResponseEntity<ProblemDetail> handleProcessorUnavailable(
+            com.ledgerflow.processor.client.ProcessorUnavailableException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                ex.getMessage() + ". Retry with the same Idempotency-Key; you will not be charged twice.");
+        problem.setType(URI.create("https://ledgerflow.io/errors/processor-unavailable"));
+        problem.setTitle("Card Processor Unavailable");
+        problem.setProperty("outcomeUnknown", ex.isOutcomeUnknown());
+        problem.setProperty("timestamp", Instant.now());
+        return org.springframework.http.ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "2")
+                .body(problem);
+    }
+
     @ExceptionHandler(ProposalNotApprovableException.class)
     public ProblemDetail handleProposalNotApprovable(ProposalNotApprovableException ex) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());

@@ -114,9 +114,14 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        # Safe to retry: the processor dedupes by our idempotency key. RestClientException covers a
+        # timeout that hits while reading the response body (not a ResourceAccessException).
         retry-exceptions:
           - org.springframework.web.client.HttpServerErrorException
           - org.springframework.web.client.ResourceAccessException
+          - org.springframework.web.client.RestClientException
+        ignore-exceptions:
+          - org.springframework.web.client.HttpClientErrorException   # 4xx: processor refused; retrying won't help
 
 management:
   endpoints:
