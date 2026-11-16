@@ -32,11 +32,12 @@ except the last two rows, which were measured on the running Docker Compose stac
 | Approving a proposal twice / concurrently (20 threads) | adjustment posted exactly once; second approval gets 409 | `ProposalApprovalSafetyIntegrationTest` |
 | Customer tries to charge another customer's account | 403, no money moves | `PaymentOwnershipIntegrationTest` |
 | Payment burst beyond rate limit | 429 with Retry-After; Redis outage does not block payments | `PaymentRateLimit*IntegrationTest` |
+| 4 outbox relays running at once (e.g. 4 app instances) | every event published exactly once (`FOR UPDATE SKIP LOCKED`) | `OutboxRelayConcurrencyIntegrationTest` |
 | A payment's trace survives the outbox | same trace id on the Kafka record as on the HTTP request | `OutboxTracePropagationIntegrationTest` |
 | Live: 50 parallel requests from the dashboard path, same key | 1 payment in DB; 1 × 201, 49 × 409 (in progress) | measured on `docker compose up` |
 | Live: AI investigation with a local model (qwen2.5:7b via Ollama) | valid proposal in ~16 s, labelled `AI_MODEL`, amount computed by code | measured on `docker compose up` |
 
-`mvn test` runs 119 tests (116 in the app, 3 in the processor simulator).
+`mvn test` runs 120 tests (117 in the app, 3 in the processor simulator).
 
 ---
 
@@ -233,8 +234,6 @@ A CloudFormation sketch with a billing alarm is in [`infra/aws-production-deploy
 Honest list of what is not done yet:
 - If the processor approves but the database write then fails, the charge has no ledger record until
   reconciliation flags it (`MISSING_IN_LEDGER`); there is no automatic compensation.
-- The outbox relay doesn't use `FOR UPDATE SKIP LOCKED`, so several app instances could publish the
-  same event twice. Consumers dedupe, so there's no money impact.
 - A default JWT signing secret is in the code for local use; production must override it.
 
 ---

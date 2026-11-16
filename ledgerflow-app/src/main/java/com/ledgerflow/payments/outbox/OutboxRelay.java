@@ -45,7 +45,7 @@ public class OutboxRelay {
     @Scheduled(fixedDelay = 500)
     @Transactional
     public int relayPendingEvents() {
-        List<OutboxEvent> pending = outboxRepository.findTop50ByStatusOrderByCreatedAtAsc(OutboxStatus.PENDING);
+        List<OutboxEvent> pending = outboxRepository.claimPendingBatch(); // row-locked; other relays skip these
         if (pending.isEmpty()) {
             return 0;
         }
