@@ -108,6 +108,7 @@ class ProcessorNetworkFaultIntegrationTest extends AbstractIntegrationTest {
     @DisplayName("Slow processor (charged, but reply too late): 503 not a decline; retry with same key captures exactly once")
     void unknownOutcomeIsRetryableAndChargesOnce() throws Exception {
         String merchant = "merch_" + UUID.randomUUID(), customer = "cust_" + UUID.randomUUID(), key = "key_" + UUID.randomUUID();
+        accountProvisioningService.getOrCreateCustomerAccount(customer, "USD", 100_000L); // opening balance is journaled; count after it
         long entriesBefore = journalEntryRepository.count();
 
         // Every reply from the processor arrives after our read timeout
