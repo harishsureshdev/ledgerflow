@@ -143,9 +143,9 @@ export function App() {
           currency: 'USD',
           paymentToken: token
         });
-        return { index: idx + 1, status: res.status, durationMs: res.durationMs };
+        return { index: idx + 1, status: res.status, durationMs: res.durationMs, paymentId: res.data?.id as string | undefined };
       } catch (err: any) {
-        return { index: idx + 1, status: 500, durationMs: 0 };
+        return { index: idx + 1, status: 500, durationMs: 0, paymentId: undefined as string | undefined };
       }
     });
 
@@ -157,16 +157,20 @@ export function App() {
     let conflicts409 = 0;
     let errors = 0;
 
+    // A retry that arrives after the first request finished is answered with the STORED
+    // response, which is also a 201 with the same payment id. So count distinct payment ids,
+    // not 201s: one id = one charge, however many 201s came back.
+    const paymentIds = new Set<string>();
     results.forEach((r) => {
-      if (r.status === 201) created201++;
-      else if (r.status === 200) replayed200++;
+      if (r.status === 201) { if (r.paymentId) paymentIds.add(r.paymentId); }
       else if (r.status === 409) conflicts409++;
       else errors++;
     });
+    created201 = paymentIds.size;
+    replayed200 = results.filter((r) => r.status === 201).length - paymentIds.size; // same-id 201 replays
 
-    // Invariant: Created payments across all 50 concurrent retries MUST be <= 1
-    // Double charges = Math.max(0, created201 - 1)
-    const doubleCharges = Math.max(0, created201 - 1);
+    // Invariant: all 50 retries share one key, so at most ONE distinct payment may exist
+    const doubleCharges = Math.max(0, paymentIds.size - 1);
 
     setConcurrencyResult({
       total: reqCount,
@@ -469,11 +473,11 @@ export function App() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, textAlign: 'center', marginBottom: 12 }}>
                   <div style={{ background: 'var(--bg-secondary)', padding: 8, borderRadius: 6 }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Created (201)</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Payments created</div>
                     <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#34d399' }}>{concurrencyResult.created201}</div>
                   </div>
                   <div style={{ background: 'var(--bg-secondary)', padding: 8, borderRadius: 6 }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Replays (200)</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Replays (stored 201)</div>
                     <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#60a5fa' }}>{concurrencyResult.replayed200}</div>
                   </div>
                   <div style={{ background: 'var(--bg-secondary)', padding: 8, borderRadius: 6 }}>
