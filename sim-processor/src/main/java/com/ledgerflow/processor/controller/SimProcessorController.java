@@ -1,5 +1,8 @@
 package com.ledgerflow.processor.controller;
 
+import com.ledgerflow.processor.model.RefundRequest;
+import com.ledgerflow.processor.model.RefundResponse;
+
 import com.ledgerflow.processor.model.ChaosConfig;
 import com.ledgerflow.processor.model.ChargeRequest;
 import com.ledgerflow.processor.model.ChargeResponse;
@@ -31,6 +34,14 @@ public class SimProcessorController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(new ChargeResponse(null, "FAILED", request.amount(), request.currency(), e.getMessage(), null));
         }
+    }
+
+    @PostMapping("/v1/refunds")
+    public ResponseEntity<RefundResponse> refund(@Valid @RequestBody RefundRequest request) {
+        RefundResponse response = simulationService.processRefund(request);
+        return "REFUNDED".equals(response.status())
+                ? ResponseEntity.ok(response)
+                : ResponseEntity.unprocessableEntity().body(response);
     }
 
     @PostMapping("/chaos/config")

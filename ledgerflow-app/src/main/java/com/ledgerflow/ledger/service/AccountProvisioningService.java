@@ -50,6 +50,12 @@ public class AccountProvisioningService {
                 });
     }
 
+    /** Read-only lookup, used for the pre-charge balance check (the binding check is the locked one in the ledger). */
+    @Transactional(readOnly = true)
+    public java.util.Optional<Account> findCustomerAccount(String customerId, String currency) {
+        return accountRepository.findByAccountNumber("CUST-" + customerId + "-" + currency.toUpperCase());
+    }
+
     /** Source of all money entering the platform; its (negative) balance is the total brought in. */
     @Transactional
     public Account getOrCreateExternalFundingAccount(String currency) {

@@ -64,6 +64,17 @@ public class GlobalExceptionHandler {
                 .body(problem);
     }
 
+    @ExceptionHandler(com.ledgerflow.payments.service.PaymentRecordingDeferredException.class)
+    public org.springframework.http.ResponseEntity<ProblemDetail> handleRecordingDeferred(RuntimeException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+        problem.setType(URI.create("https://ledgerflow.io/errors/payment-recording-deferred"));
+        problem.setTitle("Payment Recording Deferred");
+        problem.setProperty("timestamp", Instant.now());
+        return org.springframework.http.ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "1")
+                .body(problem);
+    }
+
     @ExceptionHandler(ProposalNotApprovableException.class)
     public ProblemDetail handleProposalNotApprovable(ProposalNotApprovableException ex) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());

@@ -28,6 +28,10 @@ except the last two rows, which were measured on the running Docker Compose stac
 | Settlement file with injected mismatches | each of the 4 mismatch types flagged exactly once; malformed lines skipped | `SettlementReconciliationJobIntegrationTest` |
 | AI investigator writes to the ledger | never (0 entries, 0 balance changes) | `AiInvestigatorIntegrationTest`, `InvestigatorSecurityIntegrationTest` |
 | AI picks a disallowed action, is prompt-injected, returns garbage, leaks a card number, or is down | rejected by guardrails; deterministic rules used instead | `AiInvestigatorIntegrationTest`, `AiProposalGuardrailsTest` |
+| Card charged, then recording fails temporarily (DB serialization failure) | 503; retry with same key records it, processor charged once | `ChargedButNotRecordedIntegrationTest` |
+| Card charged, then recording fails permanently (funds gone) | charge refunded at the processor, 402 | `ChargedButNotRecordedIntegrationTest` |
+| Payment larger than the customer's balance | 402 before the card is charged | `ChargedButNotRecordedIntegrationTest` |
+| Raw card number passed to the payment service | rejected before it reaches the processor | `PaymentIdempotencyIntegrationTest` |
 | App crashes mid-payment, client retries later | the expired claim is taken over; if the payment was already saved, the same payment is returned | `StaleIdempotencyLeaseIntegrationTest` |
 | Approving a proposal twice / concurrently (20 threads) | adjustment posted exactly once; second approval gets 409 | `ProposalApprovalSafetyIntegrationTest` |
 | Customer tries to charge another customer's account | 403, no money moves | `PaymentOwnershipIntegrationTest` |
@@ -37,7 +41,7 @@ except the last two rows, which were measured on the running Docker Compose stac
 | Live: 50 parallel requests from the dashboard path, same key | 1 payment in DB; 1 × 201, 49 × 409 (in progress) | measured on `docker compose up` |
 | Live: AI investigation with a local model (qwen2.5:7b via Ollama) | valid proposal in ~16 s, labelled `AI_MODEL`, amount computed by code | measured on `docker compose up` |
 
-`mvn test` runs 120 tests (117 in the app, 3 in the processor simulator).
+`mvn test` runs 124 tests (120 in the app, 4 in the processor simulator).
 
 ---
 
@@ -101,7 +105,9 @@ counts the error), because idempotency and balance checks in Postgres still prot
   `merchantId:key`, identical across retries, so Resilience4j retries can't double-charge.
 - If the processor doesn't give a definite answer (timeout, 5xx, circuit open), the API returns **503,
   not a decline**, and releases the key so the client's retry runs again and the processor replays the
-  original charge. Nightly reconciliation is the backstop.
+  original charge. If the card was charged but recording the payment fails, a temporary database error
+  also gives 503 (retry records it, still one charge); a permanent failure refunds the charge.
+  Nightly reconciliation is the backstop.
 - Payment state and its outbox event commit in one transaction; a relay publishes to Kafka; consumers
   dedupe by event id. Webhooks are HMAC-verified (constant-time compare) and deduped.
 
@@ -232,8 +238,9 @@ A CloudFormation sketch with a billing alarm is in [`infra/aws-production-deploy
 ## Known limitations
 
 Honest list of what is not done yet:
-- If the processor approves but the database write then fails, the charge has no ledger record until
-  reconciliation flags it (`MISSING_IN_LEDGER`); there is no automatic compensation.
+- If the processor approves, recording fails permanently, **and** the refund also fails, the charge is
+  left for manual review: it is logged, counted (`ledgerflow.payments{outcome=compensation_failed}`) and
+  flagged by nightly reconciliation (`MISSING_IN_LEDGER`), but not repaired automatically.
 - A default JWT signing secret is in the code for local use; production must override it.
 
 ---
