@@ -6,6 +6,7 @@ import com.ledgerflow.recon.domain.ReconItem;
 import com.ledgerflow.recon.domain.SettlementFile;
 import com.ledgerflow.recon.repository.ReconItemRepository;
 import com.ledgerflow.recon.repository.SettlementFileRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -38,13 +39,16 @@ public class ReconciliationService {
     private final ReconItemRepository reconItemRepository;
     private final AuditLogService auditLogService;
     private final JdbcTemplate jdbc;
+    private final MeterRegistry meters;
 
     public ReconciliationService(
             SettlementFileRepository settlementFileRepository,
             ReconItemRepository reconItemRepository,
             AuditLogService auditLogService,
-            JdbcTemplate jdbc
+            JdbcTemplate jdbc,
+            MeterRegistry meters
     ) {
+        this.meters = meters;
         this.settlementFileRepository = settlementFileRepository;
         this.reconItemRepository = reconItemRepository;
         this.auditLogService = auditLogService;
@@ -172,6 +176,7 @@ public class ReconciliationService {
         settlementFileRepository.save(file);
 
         List<ReconItem> saved = reconItemRepository.saveAll(items);
+        saved.forEach(i -> meters.counter("ledgerflow.recon.mismatches", "type", i.getMismatchType().name()).increment());
         auditLogService.log(
                 "RECON_SYSTEM",
                 "SYSTEM",

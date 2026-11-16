@@ -1,5 +1,8 @@
 package com.ledgerflow.payments.outbox;
 
+import com.ledgerflow.common.tracing.TraceContextCarrier;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.slf4j.Logger;
@@ -22,9 +25,17 @@ public class OutboxRelay {
     private final OutboxRepository outboxRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
 
-    public OutboxRelay(OutboxRepository outboxRepository, KafkaTemplate<String, String> kafkaTemplate) {
+    private final TraceContextCarrier traceContext;
+
+    public OutboxRelay(OutboxRepository outboxRepository, KafkaTemplate<String, String> kafkaTemplate,
+                       TraceContextCarrier traceContext, MeterRegistry meters) {
         this.outboxRepository = outboxRepository;
         this.kafkaTemplate = kafkaTemplate;
+        this.traceContext = traceContext;
+        // How far the relay is behind; alert if this keeps growing (Kafka down, relay stuck)
+        Gauge.builder("ledgerflow.outbox.pending", outboxRepository, r -> r.countByStatus(OutboxStatus.PENDING))
+                .description("Outbox events not yet published to Kafka")
+                .register(meters);
     }
 
     /**
@@ -51,7 +62,15 @@ public class OutboxRelay {
                 record.headers().add(new RecordHeader("event_type", event.getEventType().getBytes(StandardCharsets.UTF_8)));
                 record.headers().add(new RecordHeader("aggregate_type", event.getAggregateType().getBytes(StandardCharsets.UTF_8)));
 
-                kafkaTemplate.send(record).get(3, TimeUnit.SECONDS);
+                // Publish inside a span continuing the trace of the request that created the event;
+                // KafkaTemplate's observation then puts that trace's traceparent on the record.
+                traceContext.continueTrace(event.getTraceParent(), "outbox.publish", () -> {
+                    try {
+                        return kafkaTemplate.send(record).get(3, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        throw new IllegalStateException("Kafka publish failed: " + e.getMessage(), e);
+                    }
+                });
                 event.markPublished();
                 publishedCount++;
                 log.debug("Outbox relay published event: id={}, type={}", event.getId(), event.getEventType());

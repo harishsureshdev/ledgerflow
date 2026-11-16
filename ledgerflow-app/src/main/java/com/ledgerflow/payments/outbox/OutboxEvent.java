@@ -36,7 +36,19 @@ public class OutboxEvent {
     @Column(name = "processed_at")
     private Instant processedAt;
 
+    /** W3C traceparent of the request that created this event (null when tracing is off). */
+    @Column(name = "trace_parent", length = 128)
+    private String traceParent;
+
     protected OutboxEvent() {
+    }
+
+    public String getTraceParent() {
+        return traceParent;
+    }
+
+    public void setTraceParent(String traceParent) {
+        this.traceParent = traceParent;
     }
 
     public OutboxEvent(String aggregateType, String aggregateId, String eventType, String payload) {

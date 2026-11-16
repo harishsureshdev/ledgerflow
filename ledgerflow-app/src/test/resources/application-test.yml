@@ -10,6 +10,11 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  kafka:
+    consumer:
+      # Each cached test context gets its own group, so contexts don't split partitions
+      # between them and a test always sees the records it publishes.
+      group-id: ledgerflow-test-${random.uuid}
   ai:
     model:
       chat: none   # no real model in tests; AI tests supply a scripted ChatModel bean
