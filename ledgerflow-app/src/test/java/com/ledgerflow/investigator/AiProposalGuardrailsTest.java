@@ -57,6 +57,16 @@ class AiProposalGuardrailsTest {
     }
 
     @Test
+    @DisplayName("Amounts are shown to the model in major units so it cannot read cents as dollars")
+    void amountsAreDescribedInMajorUnits() {
+        assertThat(com.ledgerflow.investigator.service.AiInvestigator.describeAmount(4700L, "USD"))
+                .isEqualTo("47.00 USD (4700 minor units)");
+        assertThat(com.ledgerflow.investigator.service.AiInvestigator.describeAmount(500L, "JPY"))
+                .isEqualTo("500 JPY (500 minor units)");
+        assertThat(com.ledgerflow.investigator.service.AiInvestigator.describeAmount(null, "USD")).isEqualTo("none");
+    }
+
+    @Test
     @DisplayName("Null fields are rejected or defaulted, never crash")
     void nulls() {
         assertThat(AiProposalGuardrails.check(null, ev(MismatchType.DUPLICATE_SETTLEMENT, 1L, 1L)).accepted()).isFalse();

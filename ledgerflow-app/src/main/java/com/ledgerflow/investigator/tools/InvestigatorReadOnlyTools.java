@@ -112,7 +112,9 @@ public class InvestigatorReadOnlyTools {
      */
     @Transactional(readOnly = true)
     public List<LedgerEntryView> getLedgerEntries(String paymentReference) {
-        Optional<JournalTransaction> txOpt = transactionRepository.findByReferenceWithEntries(paymentReference);
+        // Payments are journaled under "PAYMENT-<paymentId>"; accept either form.
+        Optional<JournalTransaction> txOpt = transactionRepository.findByReferenceWithEntries(paymentReference)
+                .or(() -> transactionRepository.findByReferenceWithEntries("PAYMENT-" + paymentReference));
         if (txOpt.isEmpty()) {
             return Collections.emptyList();
         }
