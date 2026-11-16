@@ -211,7 +211,7 @@ export function App() {
     setReconSuccess(null);
     try {
       await approveAdjustment(item.id, 'Finance admin verified discrepancy vs bank settlement');
-      setReconSuccess(`Adjustment approved for item ${item.id.substring(0, 8)}... Compensating journal entry posted!`);
+      setReconSuccess(`Item ${item.id.substring(0, 8)}... approved and marked RESOLVED (no ledger entry: use an AI proposal approval to post one).`);
       await refreshData();
     } catch (err: any) {
       setReconError(err.message);
