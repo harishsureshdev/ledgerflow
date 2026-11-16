@@ -67,6 +67,29 @@ public class SimProcessorClient implements ProcessorClient {
     }
 
     /**
+     * Refunds a charge (compensation when a charge could not be recorded). Retried like charges;
+     * safe because the processor deduplicates refunds by {@code command.idempotencyKey()}.
+     */
+    @Retry(name = "simProcessor", fallbackMethod = "refundFallback")
+    @CircuitBreaker(name = "simProcessor")
+    public ProcessorRefundResult refund(ProcessorRefundCommand command) {
+        log.warn("Refunding processor charge {} (key={}) amount={}", command.processorTransactionId(),
+                command.idempotencyKey(), command.amount());
+        return restClient.post()
+                .uri("/v1/refunds")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(command)
+                .retrieve()
+                .body(ProcessorRefundResult.class);
+    }
+
+    public ProcessorRefundResult refundFallback(ProcessorRefundCommand command, Throwable ex) {
+        log.error("REFUND FAILED for processor charge {} (key={}): {}", command.processorTransactionId(),
+                command.idempotencyKey(), ex.toString());
+        return new ProcessorRefundResult(null, command.processorTransactionId(), "FAILED");
+    }
+
+    /**
      * Invoked once retries are exhausted (or immediately when the circuit is open).
      *
      * <p>A 4xx means the processor definitely refused the request: report a failure (no charge).

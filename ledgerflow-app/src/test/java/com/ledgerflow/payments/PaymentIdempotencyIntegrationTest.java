@@ -114,5 +114,7 @@ class PaymentIdempotencyIntegrationTest extends AbstractIntegrationTest {
         assertThatThrownBy(() -> paymentService.processPayment(merchantId, idempotencyKey, cardRequest))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("PCI compliance violation");
+        // Bug: the raw card number used to reach the card processor before being rejected
+        assertThat(testProcessorClient.chargesMade()).as("a raw PAN must never be sent to the processor").isZero();
     }
 }

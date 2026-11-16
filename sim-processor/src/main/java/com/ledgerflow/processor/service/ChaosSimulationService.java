@@ -3,6 +3,8 @@ package com.ledgerflow.processor.service;
 import com.ledgerflow.processor.model.ChaosConfig;
 import com.ledgerflow.processor.model.ChargeRequest;
 import com.ledgerflow.processor.model.ChargeResponse;
+import com.ledgerflow.processor.model.RefundRequest;
+import com.ledgerflow.processor.model.RefundResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,7 @@ public class ChaosSimulationService {
 
     private volatile ChaosConfig chaosConfig = ChaosConfig.normal();
     private final Map<String, ChargeResponse> idempotencyStore = new ConcurrentHashMap<>();
+    private final Map<String, RefundResponse> refundStore = new ConcurrentHashMap<>();
 
     public void setChaosConfig(ChaosConfig config) {
         this.chaosConfig = config != null ? config : ChaosConfig.normal();
@@ -69,6 +72,29 @@ public class ChaosSimulationService {
         ChargeResponse approved = ChargeResponse.approved(txId, request.amount(), request.currency());
         idempotencyStore.put(request.idempotencyKey(), approved);
         return approved;
+    }
+
+    /**
+     * Refunds a charge this processor made. Idempotent per refund key: a repeat returns the
+     * original refund. Refunding an unknown charge, or with a different amount, fails.
+     */
+    public RefundResponse processRefund(RefundRequest request) {
+        RefundResponse existing = refundStore.get(request.idempotencyKey());
+        if (existing != null) {
+            return existing;
+        }
+        boolean knownCharge = idempotencyStore.values().stream().anyMatch(c ->
+                request.processorTransactionId().equals(c.processorTransactionId())
+                        && "APPROVED".equals(c.status())
+                        && request.amount().equals(c.amount()));
+        RefundResponse response = knownCharge
+                ? new RefundResponse("re_sim_" + UUID.randomUUID(), request.processorTransactionId(), "REFUNDED")
+                : new RefundResponse(null, request.processorTransactionId(), "FAILED");
+        if (knownCharge) {
+            refundStore.put(request.idempotencyKey(), response);
+            log.info("Refunded charge {} ({} {})", request.processorTransactionId(), request.amount(), request.currency());
+        }
+        return response;
     }
 
     public static class ProcessorDownException extends RuntimeException {

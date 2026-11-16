@@ -22,6 +22,25 @@ class ChaosSimulationServiceTest {
     }
 
     @Test
+    @DisplayName("Refunds: a known charge is refunded once per refund key; unknown charges and wrong amounts fail")
+    void refundsAreIdempotentAndValidated() {
+        var charge = service.processCharge(new ChargeRequest("tok_visa", 6000L, "USD", "key_" + UUID.randomUUID()));
+        String refundKey = "refund_" + UUID.randomUUID();
+
+        var first = service.processRefund(new com.ledgerflow.processor.model.RefundRequest(
+                charge.processorTransactionId(), 6000L, "USD", refundKey));
+        var again = service.processRefund(new com.ledgerflow.processor.model.RefundRequest(
+                charge.processorTransactionId(), 6000L, "USD", refundKey));
+        assertThat(first.status()).isEqualTo("REFUNDED");
+        assertThat(again.refundId()).as("same refund key replays, no second refund").isEqualTo(first.refundId());
+
+        assertThat(service.processRefund(new com.ledgerflow.processor.model.RefundRequest(
+                "ch_unknown", 6000L, "USD", "refund_" + UUID.randomUUID())).status()).isEqualTo("FAILED");
+        assertThat(service.processRefund(new com.ledgerflow.processor.model.RefundRequest(
+                charge.processorTransactionId(), 9999L, "USD", "refund_" + UUID.randomUUID())).status()).isEqualTo("FAILED");
+    }
+
+    @Test
     @DisplayName("Normal operation approves valid charge and replays for identical key")
     void normalApprovalAndReplay() {
         String key = "key_" + UUID.randomUUID();
